@@ -5,6 +5,7 @@ enum UnixSocketError: Error, LocalizedError {
     case pathTooLong(String)
     case connectFailed(String)
     case closed
+    case timedOut
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum UnixSocketError: Error, LocalizedError {
             return "Could not reach the Herdr socket: \(message)"
         case .closed:
             return "The Herdr socket closed."
+        case .timedOut:
+            return "The Herdr socket did not answer."
         }
     }
 }
@@ -25,7 +28,11 @@ final class UnixJSONSocket: @unchecked Sendable {
     private let closeLock = NSLock()
     private var closed = false
 
-    init(path: String) throws {
+    /// A read timeout is for requests, not for the event stream: a subscription
+    /// is *meant* to sit there for minutes at a time. A request is not, and
+    /// without a deadline one that never gets an answer parks the session's
+    /// only worker thread for good.
+    init(path: String, readTimeout: TimeInterval? = nil) throws {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(path.utf8)
@@ -57,6 +64,13 @@ final class UnixJSONSocket: @unchecked Sendable {
             Darwin.close(sock)
             throw UnixSocketError.connectFailed(message)
         }
+        if let readTimeout, readTimeout > 0 {
+            var tv = timeval(
+                tv_sec: Int(readTimeout),
+                tv_usec: Int32((readTimeout - Double(Int(readTimeout))) * 1_000_000)
+            )
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        }
         fd = sock
     }
 
@@ -69,6 +83,10 @@ final class UnixJSONSocket: @unchecked Sendable {
         defer { closeLock.unlock() }
         guard !closed else { return }
         closed = true
+        // `shutdown` first: a thread already blocked in `read` on this socket —
+        // the event stream's — is woken by it, where a bare `close` can leave it
+        // parked on a descriptor nobody owns any more.
+        shutdown(fd, SHUT_RDWR)
         Darwin.close(fd)
     }
 
@@ -89,6 +107,7 @@ final class UnixJSONSocket: @unchecked Sendable {
             if n == 0 { throw UnixSocketError.closed }
             if n < 0 {
                 if errno == EINTR { continue }
+                if errno == EAGAIN || errno == EWOULDBLOCK { throw UnixSocketError.timedOut }
                 throw UnixSocketError.connectFailed(String(cString: strerror(errno)))
             }
             lines.append(Data(chunk.prefix(n)))

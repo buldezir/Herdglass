@@ -75,7 +75,11 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     private let addButton = NSButton()
     private var model = SidebarModel()
     private var collapsedHosts: Set<String> = []
-    private var isApplyingModel = false
+    /// The row this view last selected itself. The outline view reports our own
+    /// pushes through the same delegate callback as the user's clicks, and the
+    /// id is the only thing that tells the two apart — a flag set around the
+    /// push cannot, because the notification does not arrive during it.
+    private var appliedSelectionId: String?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -154,14 +158,15 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         let structureChanged = model.structure != self.model.structure
         self.model = model
 
-        isApplyingModel = true
-        defer { isApplyingModel = false }
-
         if structureChanged {
             outline.reloadData()
             for host in model.hosts where !collapsedHosts.contains(host.id) {
                 outline.expandItem(host.id)
             }
+            // A reload keeps the selection by index, which may now be a
+            // different row; take whatever survived as ours so the next sync
+            // does not read it as a selection the user made.
+            appliedSelectionId = selectedRowId
         } else {
             // Same rows, new state: reconfigure in place so scroll position and
             // the user's collapsed hosts survive every snapshot.
@@ -184,14 +189,38 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         }
     }
 
+    /// The row the outline view has selected right now.
+    private var selectedRowId: String? {
+        guard outline.selectedRow >= 0 else { return nil }
+        return outline.item(atRow: outline.selectedRow) as? String
+    }
+
+    /// Point the outline view at the row the model says is selected — unless the
+    /// user has already moved it somewhere we have not been told about yet.
+    ///
+    /// `NSOutlineView` does not post `outlineViewSelectionDidChange` from inside
+    /// the click that caused it; the notification arrives afterwards. A snapshot
+    /// landing in between therefore used to find the outline on the row the user
+    /// just clicked and the model still on the old one, and push the old one
+    /// back — so the click was undone before it was ever reported, and the
+    /// notification that would have reported it was swallowed as one of ours.
+    /// That is what made picking a space work only sometimes: the more snapshots
+    /// per second, the more often the click lost the race.
     private func syncSelection() {
+        let current = selectedRowId
+        // Something other than us moved it: leave it alone and let
+        // `outlineViewSelectionDidChange` report it.
+        guard current == appliedSelectionId else { return }
         guard let selectedId = model.selectedId else {
+            guard current != nil else { return }
+            appliedSelectionId = nil
             outline.deselectAll(nil)
             return
         }
+        guard current != selectedId else { return }
         let row = outline.row(forItem: selectedId)
         guard row >= 0 else { return }
-        guard outline.selectedRow != row else { return }
+        appliedSelectionId = selectedId
         outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outline.scrollRowToVisible(row)
     }
@@ -275,8 +304,11 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
-        guard !isApplyingModel else { return }
-        guard let id = outline.item(atRow: outline.selectedRow) as? String else { return }
+        guard let id = selectedRowId else { return }
+        // Our own `syncSelection` echoes back through here; only a row the user
+        // moved to is news for the window.
+        guard id != appliedSelectionId else { return }
+        appliedSelectionId = id
         let source: SelectionSource = switch NSApp.currentEvent?.type {
         case .leftMouseDown, .leftMouseUp, .rightMouseDown, .otherMouseDown: .pointer
         default: .keyboard

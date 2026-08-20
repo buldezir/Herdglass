@@ -84,6 +84,11 @@ public enum ProcessRunner {
         public var combined: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
     }
 
+    /// Run a command and collect its output.
+    ///
+    /// `timeout` is not optional decoration: this runs `ssh` for everything from
+    /// dialling a host to `-O exit` at quit, some of it on the main thread, and
+    /// a network command with no deadline is a window that stops answering.
     @discardableResult
     public static func run(
         executable: String,
@@ -91,7 +96,8 @@ public enum ProcessRunner {
         extraEnv: [String: String],
         currentDirectory: String? = nil,
         stdin: String? = nil,
-        inheritLoginPath: Bool = true
+        inheritLoginPath: Bool = true,
+        timeout: TimeInterval? = nil
     ) -> Result {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: executable)
@@ -134,6 +140,13 @@ public enum ProcessRunner {
             }
         }
 
+        if let timeout, !waitForExit(proc, timeout: timeout) {
+            // Killed rather than waited out: the pipes then hit EOF, so the
+            // drain below still finishes and we report what did arrive.
+            proc.terminate()
+            _ = waitForExit(proc, timeout: 1)
+            if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+        }
         proc.waitUntilExit()
         group.wait()
         return Result(
@@ -142,6 +155,17 @@ public enum ProcessRunner {
             stderr: String(decoding: stderrBox.value, as: UTF8.self)
         )
     }
+}
+
+/// Poll for the child rather than blocking in `waitUntilExit`, so a deadline
+/// can be enforced without a second thread.
+private func waitForExit(_ proc: Process, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while proc.isRunning {
+        if Date() >= deadline { return false }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    return true
 }
 
 /// Writes every byte, tolerating a reader that has already gone away.

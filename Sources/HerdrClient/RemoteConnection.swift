@@ -71,7 +71,11 @@ public final class RemoteConnection: @unchecked Sendable {
         guard !alreadyClosed else { return }
 
         if !target.isLocal {
-            _ = ssh(["-O", "exit"])
+            // Bounded, because this is called from `windowWillClose` on the main
+            // thread: asking the master to go now is worth a moment, but not
+            // worth a window that will not close. `ControlPersist` reaps the
+            // master anyway if the request does not get through.
+            _ = ssh(["-O", "exit"], timeout: Self.controlExitTimeout)
         }
         try? FileManager.default.removeItem(at: workDir)
     }
@@ -126,7 +130,8 @@ public final class RemoteConnection: @unchecked Sendable {
                 "-o", "ServerAliveInterval=30",
                 "-o", "ServerAliveCountMax=3",
             ] + sshTarget.extraArgs + [sshTarget.destination],
-            extraEnv: [:]
+            extraEnv: [:],
+            timeout: Self.sshTimeout
         )
         if result.terminationStatus != 0 {
             throw HerdrRPCError(code: "ssh_failed", message: Self.sshError(result, host: target.host))
@@ -204,8 +209,17 @@ public final class RemoteConnection: @unchecked Sendable {
         throw HerdrRPCError(code: "forward_timeout", message: "Herdr socket did not appear: \(path)")
     }
 
+    /// How long `ssh -O exit` may take before the app stops waiting for it.
+    private static let controlExitTimeout: TimeInterval = 3
+    /// A dial that has not answered by now is not going to.
+    private static let sshTimeout: TimeInterval = 30
+
     @discardableResult
-    private func ssh(_ extra: [String], stdin: String? = nil) -> ProcessRunner.Result {
+    private func ssh(
+        _ extra: [String],
+        stdin: String? = nil,
+        timeout: TimeInterval? = sshTimeout
+    ) -> ProcessRunner.Result {
         let sshTarget = SSHTarget(host: target.host)
         var args = [
             "-o", "ControlPath=\(controlPath)",
@@ -222,7 +236,13 @@ public final class RemoteConnection: @unchecked Sendable {
             args.append(sshTarget.destination)
             args += extra
         }
-        return ProcessRunner.run(executable: "/usr/bin/ssh", arguments: args, extraEnv: [:], stdin: stdin)
+        return ProcessRunner.run(
+            executable: "/usr/bin/ssh",
+            arguments: args,
+            extraEnv: [:],
+            stdin: stdin,
+            timeout: timeout
+        )
     }
 
     private static func sshError(_ result: ProcessRunner.Result, host: String) -> String {

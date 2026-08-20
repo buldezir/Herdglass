@@ -432,6 +432,31 @@ private let emptySnapshotJSON = """
     #expect(error?.message == "unknown pane")
 }
 
+@Test func aCommandThatOutlivesItsTimeoutIsKilledRatherThanWaitedOut() {
+    // `ssh` runs on the main thread at quit; a network command with no deadline
+    // is a window that will not close.
+    let started = Date()
+    let result = ProcessRunner.run(
+        executable: "/bin/sleep",
+        arguments: ["30"],
+        extraEnv: [:],
+        timeout: 0.4
+    )
+    #expect(Date().timeIntervalSince(started) < 5)
+    #expect(result.terminationStatus != 0)
+}
+
+@Test func aServerThatNeverAnswersTimesOutRatherThanParkingTheCaller() throws {
+    // Every request a session makes runs on one queue, so a read with no
+    // deadline stops the whole window updating, not just this call.
+    let server = try SilentJSONServer()
+    defer { server.stop() }
+    let rpc = HerdrRPC(socketPath: server.path, requestTimeout: 0.3)
+    let started = Date()
+    #expect(throws: (any Error).self) { try rpc.snapshot() }
+    #expect(Date().timeIntervalSince(started) < 5)
+}
+
 @Test func unreachableSocketThrowsRatherThanHanging() {
     let path = FileManager.default.temporaryDirectory.appendingPathComponent("absent.sock").path
     #expect(throws: (any Error).self) {
@@ -630,4 +655,54 @@ private let emptySnapshotJSON = """
     let round = BridgeOptions(arguments: argv, environment: [:])
     #expect(round.target == "w4:p1")
     #expect(round.socketPath == "/tmp/ht 1/herdr.sock")
+}
+
+/// Accepts a connection and then says nothing at all — a forwarded socket whose
+/// far end has stopped answering looks exactly like this.
+private final class SilentJSONServer: @unchecked Sendable {
+    let path: String
+    private let listener: Int32
+
+    init() throws {
+        path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("silent-\(UUID().uuidString.prefix(8)).sock").path
+
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(path.utf8)
+        withUnsafeMutablePointer(to: &addr.sun_path) { pointer in
+            pointer.withMemoryRebound(to: UInt8.self, capacity: bytes.count + 1) { destination in
+                for (offset, byte) in bytes.enumerated() { destination[offset] = byte }
+                destination[bytes.count] = 0
+            }
+        }
+        let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let bound = withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, size) }
+        }
+        guard bound == 0, listen(fd, 8) == 0 else {
+            close(fd)
+            throw HerdrRPCError(code: "bind", message: "could not bind \(path)")
+        }
+        listener = fd
+
+        let listening = fd
+        let thread = Thread {
+            var clients: [Int32] = []
+            while true {
+                let client = accept(listening, nil, nil)
+                if client < 0 { break }
+                // Held open, unanswered, until the server is torn down.
+                clients.append(client)
+            }
+            for client in clients { close(client) }
+        }
+        thread.start()
+    }
+
+    func stop() {
+        close(listener)
+        try? FileManager.default.removeItem(atPath: path)
+    }
 }

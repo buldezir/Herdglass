@@ -106,6 +106,31 @@ final class SessionController {
     /// not `Sendable` and must not cross to a background queue.
     private var pendingConnect: ((Error?) -> Void)?
 
+    /// Every request this session makes, one at a time, on one thread.
+    ///
+    /// It has to be a queue of our own rather than `DispatchQueue.global`, and
+    /// the difference only shows on a forwarded socket. Each request is a
+    /// blocking round trip; events arrive faster than a round trip takes; and
+    /// dispatch answers a blocked block by starting another thread. Every one of
+    /// the global pool's 64 threads therefore ended up parked inside
+    /// `HerdrRPC.request`, which starves everything else that needs a worker —
+    /// the `pane.focus` for a space the user just picked waited behind dozens of
+    /// stale snapshots, and `⌘Q` sat in AppKit's
+    /// `_waitForPendingChangesToFinish` (which needs a pool thread of its own)
+    /// until the backlog drained, for the best part of a minute.
+    private let work = DispatchQueue(label: "herdr.session", qos: .userInitiated)
+    /// A snapshot is in flight; another request would only queue behind it.
+    private var snapshotInFlight = false
+    /// Something asked for a snapshot while one was in flight. One more when it
+    /// lands is enough however many asked — they would all read the same server.
+    private var snapshotQueued = false
+    private var lastSnapshotStart: Date = .distantPast
+    private var coalesceTimer: Timer?
+    /// Floor between snapshots, so a pane printing output — which is a
+    /// `pane.updated` event per burst — cannot drive the whole window's refresh
+    /// at the rate the terminal writes.
+    private static let minimumSnapshotInterval: TimeInterval = 0.2
+
     let herdrBinary = HerdrPaths.localHerdrBinary()
 
     var hasAttention: Bool { !unreadPaneIds.isEmpty }
@@ -164,6 +189,10 @@ final class SessionController {
         retryTimer = nil
         pollTimer?.invalidate()
         pollTimer = nil
+        coalesceTimer?.invalidate()
+        coalesceTimer = nil
+        snapshotInFlight = false
+        snapshotQueued = false
         events?.cancel()
         events = nil
         rpc = nil
@@ -317,7 +346,7 @@ final class SessionController {
     /// Fire-and-forget request off the main thread, followed by a snapshot so
     /// the UI reflects it without waiting for the next poll.
     private func perform(_ body: @escaping @Sendable () throws -> Void) {
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        work.async { [weak self] in
             try? body()
             DispatchQueue.main.async { self?.refreshSnapshot() }
         }
@@ -325,17 +354,17 @@ final class SessionController {
 
     private func focusRemotePane(_ paneId: String) {
         guard let rpc else { return }
-        DispatchQueue.global(qos: .userInitiated).async { try? rpc.focusPane(paneId) }
+        work.async { try? rpc.focusPane(paneId) }
     }
 
     private func focusRemoteTab(_ tabId: String) {
         guard let rpc else { return }
-        DispatchQueue.global(qos: .userInitiated).async { try? rpc.focusTab(tabId) }
+        work.async { try? rpc.focusTab(tabId) }
     }
 
     private func focusRemoteWorkspace(_ workspaceId: String) {
         guard let rpc else { return }
-        DispatchQueue.global(qos: .userInitiated).async { try? rpc.focusWorkspace(workspaceId) }
+        work.async { try? rpc.focusWorkspace(workspaceId) }
     }
 
     // MARK: - Derived state
@@ -453,12 +482,38 @@ final class SessionController {
         }
     }
 
+    /// Ask the server what it looks like now — at most one request at a time,
+    /// and at most one every `minimumSnapshotInterval`.
+    ///
+    /// Both bounds are load bearing. Every event on the stream lands here, and a
+    /// pane printing output produces events far faster than a forwarded socket
+    /// can answer them: without coalescing, each one started another blocking
+    /// request on another thread, and without the floor, each one drove a full
+    /// window refresh. What the user saw was a window that fell behind, clicks
+    /// on a space that did nothing, and a minute-long `⌘Q`.
     private func refreshSnapshot() {
         guard let rpc else { return }
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        guard !snapshotInFlight else {
+            snapshotQueued = true
+            return
+        }
+        let sinceLast = Date().timeIntervalSince(lastSnapshotStart)
+        guard sinceLast >= Self.minimumSnapshotInterval else {
+            scheduleCoalescedSnapshot(after: Self.minimumSnapshotInterval - sinceLast)
+            return
+        }
+        coalesceTimer?.invalidate()
+        coalesceTimer = nil
+        snapshotQueued = false
+        snapshotInFlight = true
+        lastSnapshotStart = Date()
+        work.async { [weak self] in
             let result = Result { try rpc.snapshot() }
             DispatchQueue.main.async {
+                // The flag is cleared by `disconnect`, so a reply from a session
+                // that has since been replaced must not clear the new one's.
                 guard let self, self.rpc === rpc else { return }
+                self.snapshotInFlight = false
                 switch result {
                 case .success(let snapshot):
                     // A poll that lands is also how we learn a wobble is over.
@@ -471,6 +526,18 @@ final class SessionController {
                     self.delegate?.sessionDidUpdate(self)
                     self.reconnect()
                 }
+                if self.snapshotQueued { self.refreshSnapshot() }
+            }
+        }
+    }
+
+    private func scheduleCoalescedSnapshot(after delay: TimeInterval) {
+        snapshotQueued = true
+        guard coalesceTimer == nil else { return }
+        coalesceTimer = Timer.scheduledTimer(withTimeInterval: max(delay, 0.01), repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.coalesceTimer = nil
+                self?.refreshSnapshot()
             }
         }
     }
@@ -616,7 +683,7 @@ final class SessionController {
     private func fetchLayout(tabId: String, key: String, prefetch: Bool) {
         guard let rpc, layoutTrees[tabId]?.key != key, !layoutFetches.contains(tabId) else { return }
         layoutFetches.insert(tabId)
-        DispatchQueue.global(qos: prefetch ? .utility : .userInitiated).async { [weak self] in
+        work.async { [weak self] in
             let tree = try? rpc.layout(tabId: tabId)
             DispatchQueue.main.async {
                 guard let self, self.rpc === rpc else { return }

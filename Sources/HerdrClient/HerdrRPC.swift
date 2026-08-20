@@ -7,6 +7,7 @@ import Foundation
 /// exception — that connection stays open and streams events.
 public final class HerdrRPC: @unchecked Sendable {
     private let socketPath: String
+    private let requestTimeout: TimeInterval
     private let queue = DispatchQueue(label: "herdr.rpc")
     private var nextId = 1
 
@@ -28,8 +29,14 @@ public final class HerdrRPC: @unchecked Sendable {
         "layout.updated",
     ]
 
-    public init(socketPath: String) {
+    /// A request that never gets an answer must not park the caller for ever:
+    /// every call a session makes runs on one queue, so one stuck read would
+    /// stop the whole window updating.
+    public static let defaultRequestTimeout: TimeInterval = 15
+
+    public init(socketPath: String, requestTimeout: TimeInterval = HerdrRPC.defaultRequestTimeout) {
         self.socketPath = socketPath
+        self.requestTimeout = requestTimeout
     }
 
     public func snapshot() throws -> SessionSnapshot {
@@ -184,7 +191,7 @@ public final class HerdrRPC: @unchecked Sendable {
             // A fresh socket per call: Herdr hangs up after answering, so a
             // cached connection makes every request after the first fail — and
             // the caller read that as a dropped session and reconnected in a loop.
-            let socket = try UnixJSONSocket(path: socketPath)
+            let socket = try UnixJSONSocket(path: socketPath, readTimeout: requestTimeout)
             defer { socket.closeQuietly() }
 
             let id = "rpc-\(nextId)"
