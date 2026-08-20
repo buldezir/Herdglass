@@ -10,6 +10,7 @@ Do not fork or copy [cmux](https://github.com/manaflow-ai/cmux) (AGPL). Renderin
 - `Sources/HerdrTerm/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`)
 - `Tests/HerdrClientTests/` — parsing, framing, and RPC-transport tests
 - `Scripts/dev.sh` — build `.build/HerdrTerm.app` and optionally `--run` (extra args pass through)
+- `Scripts/release.sh` — optimized build at `.build/release-app/HerdrTerm.app`, `--install` to `/Applications`, optionally `--run`
 
 Entry: `HerdrTermMain.swift`. Flags: `--bridge` (PTY child for libghostty), `--connect <host>` (skip the connect sheet), `--self-test <host>`, `--show-ghostty-config` (what the app took from the user's ghostty config, and the menu it produced).
 
