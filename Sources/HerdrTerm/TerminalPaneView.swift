@@ -73,8 +73,27 @@ final class TerminalPaneView: NSView {
         let control = PaneControlChannel()
         self.control = control
 
+        // libghostty drops the surface's own `command` and `env_vars`, so the
+        // bridge is configured app-wide and told which pane it serves on its
+        // command line. `launch` is still filled in: it costs nothing, and a
+        // libghostty that honours it would simply get there first.
+        let argv = BridgeOptions.argv(
+            executablePath: executablePath,
+            target: paneId,
+            socketPath: socketPath,
+            herdrBinary: herdrBinary,
+            controlPipe: control?.path
+        )
+        guard GhosttyRuntime.useSurfaceCommand(argv) else {
+            failAttach(
+                paneId: paneId,
+                detail: "Could not tell libghostty to run the Herdr bridge for this pane."
+            )
+            return
+        }
+
         var launch = GhosttyTerminalLaunchConfiguration()
-        launch.command = executablePath + " --bridge"
+        launch.command = argv.map(\.shellEscaped).joined(separator: " ")
         launch.environment = [
             "HERDR_TERM_TARGET": paneId,
             "HERDR_SOCKET_PATH": socketPath,
@@ -95,7 +114,6 @@ final class TerminalPaneView: NSView {
         var handlers = session.makeViewHandlers()
         handlers.scrollWheel = { [weak self] event in self?.scroll(event) }
         view.handlers = handlers
-        session.attach(to: view)
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: placeholder)
         NSLayoutConstraint.activate([
@@ -104,11 +122,39 @@ final class TerminalPaneView: NSView {
             view.leadingAnchor.constraint(equalTo: leadingAnchor),
             view.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+        // The surface is created against a view that is already in the window:
+        // libghostty builds a `CVDisplayLink` from the view's screen, and a view
+        // that has not landed anywhere yet has none, so creating it first fails.
+        layoutSubtreeIfNeeded()
+        session.attach(to: view)
+
+        // `ghostty_surface_new` reports failure by returning null, which
+        // GhosttyKit passes on as a nil `surface`. Without this the pane just
+        // renders empty and reads as a terminal that never printed anything.
+        guard session.surface != nil else {
+            view.removeFromSuperview()
+            session.closeHandler = nil
+            host.unregister(session)
+            failAttach(
+                paneId: paneId,
+                detail: "libghostty could not create a surface for this pane. It needs the window to be on a "
+                    + "display — a locked screen is enough to stop it. Pick the pane again to retry."
+            )
+            return
+        }
 
         self.session = session
         terminalView = view
         GhosttyRuntime.paneAttached()
         focusTerminal()
+    }
+
+    /// An attach that never got as far as a surface. Parked the same way a
+    /// bridge that exited is parked: `refresh` runs on every snapshot, so
+    /// without this the failure repeats every couple of seconds.
+    private func failAttach(paneId: String, detail: String) {
+        showPlaceholder(title: "Terminal unavailable", detail: detail, symbol: "exclamationmark.triangle")
+        detachedPaneId = paneId
     }
 
     /// Keystrokes should land in the terminal, not in whatever list the user

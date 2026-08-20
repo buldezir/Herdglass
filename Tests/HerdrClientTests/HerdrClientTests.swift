@@ -393,3 +393,79 @@ private let emptySnapshotJSON = """
     channel.close()
     #expect(!FileManager.default.fileExists(atPath: path))
 }
+
+// MARK: - Bridge options
+
+@Test func bridgeReadsThePaneFromItsArguments() {
+    let options = BridgeOptions(
+        arguments: [
+            "--bridge",
+            "--target", "w4:p1",
+            "--socket", "/tmp/ht/herdr.sock",
+            "--herdr-bin", "/opt/homebrew/bin/herdr",
+            "--control-pipe", "/tmp/herdr-term-ab.ctl",
+        ],
+        environment: [:]
+    )
+    #expect(options.target == "w4:p1")
+    #expect(options.socketPath == "/tmp/ht/herdr.sock")
+    #expect(options.herdrBinary == "/opt/homebrew/bin/herdr")
+    #expect(options.controlPipe == "/tmp/herdr-term-ab.ctl")
+}
+
+/// libghostty drops a surface's `env_vars`, which is why the arguments exist at
+/// all — but a bridge started by hand still has only the environment.
+@Test func bridgeFallsBackToTheEnvironment() {
+    let options = BridgeOptions(
+        arguments: ["--bridge"],
+        environment: [
+            "HERDR_TERM_TARGET": "w1:p2",
+            "HERDR_SOCKET_PATH": "/tmp/env/herdr.sock",
+            "HERDR_BIN": "/usr/local/bin/herdr",
+            "HERDR_TERM_CONTROL_PIPE": "/tmp/env.ctl",
+        ]
+    )
+    #expect(options.target == "w1:p2")
+    #expect(options.socketPath == "/tmp/env/herdr.sock")
+    #expect(options.herdrBinary == "/usr/local/bin/herdr")
+    #expect(options.controlPipe == "/tmp/env.ctl")
+}
+
+@Test func bridgeArgumentsWinOverTheEnvironment() {
+    let options = BridgeOptions(
+        arguments: ["--bridge", "--target", "w9:p9"],
+        environment: ["HERDR_TERM_TARGET": "stale", "HERDR_BIN": "/usr/local/bin/herdr"]
+    )
+    #expect(options.target == "w9:p9")
+    #expect(options.herdrBinary == "/usr/local/bin/herdr")
+}
+
+@Test func bridgeTargetIsEmptyWhenNobodyNamedAPane() {
+    #expect(BridgeOptions(arguments: ["--bridge"], environment: [:]).target.isEmpty)
+    // A flag whose value is missing must not swallow the next flag.
+    let options = BridgeOptions(arguments: ["--socket", "--target", "w2:p3"], environment: [:])
+    #expect(options.target == "w2:p3")
+    #expect(options.socketPath == nil)
+}
+
+/// The argv is handed to libghostty as one shell string, so every element has
+/// to survive `/bin/sh -c` — including an app bundle somebody moved into a
+/// directory with a space in it.
+@Test func bridgeArgvQuotesForTheShell() {
+    let argv = BridgeOptions.argv(
+        executablePath: "/Applications/My Apps/HerdrTerm",
+        target: "w4:p1",
+        socketPath: "/tmp/ht 1/herdr.sock",
+        herdrBinary: "/opt/homebrew/bin/herdr",
+        controlPipe: nil
+    )
+    #expect(argv.first == "/Applications/My Apps/HerdrTerm")
+    #expect(!argv.contains("--control-pipe"))
+    let command = argv.map(\.shellEscaped).joined(separator: " ")
+    #expect(command.hasPrefix("'/Applications/My Apps/HerdrTerm' '--bridge'"))
+    #expect(command.contains("'/tmp/ht 1/herdr.sock'"))
+
+    let round = BridgeOptions(arguments: argv, environment: [:])
+    #expect(round.target == "w4:p1")
+    #expect(round.socketPath == "/tmp/ht 1/herdr.sock")
+}

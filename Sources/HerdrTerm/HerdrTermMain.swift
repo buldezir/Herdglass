@@ -9,7 +9,7 @@ enum HerdrTermMain {
 
         // The PTY child libghostty spawns for the focused pane.
         if arguments.contains("--bridge") {
-            ControlBridge.run()
+            ControlBridge.run(arguments: arguments)
             return
         }
 

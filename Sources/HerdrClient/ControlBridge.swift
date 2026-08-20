@@ -1,21 +1,86 @@
 import Darwin
 import Foundation
 
+/// Everything the bridge needs to know, on its own argv.
+///
+/// It cannot come from the environment: libghostty does not pass a surface's
+/// `env_vars` (or its `command`) through to the PTY child, so the GUI has to
+/// hand the pane over as arguments baked into the command it configures. The
+/// environment is still read as a fallback so `--bridge` stays runnable by
+/// hand, and so an older GUI keeps working against a newer bridge.
+public struct BridgeOptions: Equatable, Sendable {
+    public var target: String
+    public var socketPath: String?
+    public var herdrBinary: String?
+    public var controlPipe: String?
+
+    public init(arguments: [String], environment: [String: String] = ProcessInfo.processInfo.environment) {
+        var values: [String: String] = [:]
+        var index = arguments.startIndex
+        while index < arguments.endIndex {
+            let flag = arguments[index]
+            guard flag.hasPrefix("--"), arguments.indices.contains(index + 1) else {
+                index += 1
+                continue
+            }
+            let value = arguments[index + 1]
+            guard !value.hasPrefix("--") else {
+                index += 1
+                continue
+            }
+            values[flag] = value
+            index += 2
+        }
+
+        func pick(_ flag: String, _ variable: String) -> String? {
+            if let value = values[flag], !value.isEmpty { return value }
+            if let value = environment[variable], !value.isEmpty { return value }
+            return nil
+        }
+
+        target = pick("--target", "HERDR_TERM_TARGET") ?? ""
+        socketPath = pick("--socket", "HERDR_SOCKET_PATH")
+        herdrBinary = pick("--herdr-bin", "HERDR_BIN")
+        controlPipe = pick("--control-pipe", PaneControlChannel.environmentKey)
+    }
+
+    /// The argv the GUI configures libghostty to run for a pane.
+    public static func argv(
+        executablePath: String,
+        target: String,
+        socketPath: String,
+        herdrBinary: String,
+        controlPipe: String?
+    ) -> [String] {
+        var argv = [
+            executablePath, "--bridge",
+            "--target", target,
+            "--socket", socketPath,
+            "--herdr-bin", herdrBinary,
+        ]
+        if let controlPipe, !controlPipe.isEmpty {
+            argv += ["--control-pipe", controlPipe]
+        }
+        return argv
+    }
+}
+
 /// PTY child for libghostty: translates Herdr `terminal session control` NDJSON
 /// into raw ANSI on stdout / keystrokes on stdin.
 public enum ControlBridge {
-    public static func run() {
+    public static func run(arguments: [String] = Array(CommandLine.arguments.dropFirst())) {
         HerdrProcess.setUp()
         setvbuf(stdout, nil, _IONBF, 0)
         setvbuf(stdin, nil, _IONBF, 0)
 
-        let env = ProcessInfo.processInfo.environment
-        guard let target = env["HERDR_TERM_TARGET"], !target.isEmpty else {
-            fputs("herdr-term-bridge: HERDR_TERM_TARGET is required\n", stderr)
+        let options = BridgeOptions(arguments: arguments)
+        let target = options.target
+        guard !target.isEmpty else {
+            fputs("herdr-term-bridge: --target <pane> is required\n", stderr)
             exit(2)
         }
-        let herdr = env["HERDR_BIN"] ?? HerdrPaths.localHerdrBinary()
-        let socket = env["HERDR_SOCKET_PATH"]
+        let herdr = options.herdrBinary ?? HerdrPaths.localHerdrBinary()
+        let socket = options.socketPath
         let cookedTerminal = enterRawMode()
         var size = currentWinSize()
         if size.cols == 0 { size.cols = 80 }
@@ -48,7 +113,7 @@ public enum ControlBridge {
         io.startStdin()
         io.startWinch()
         io.startHerdrOutput(fromHerdr.fileHandleForReading)
-        if let controlPipe = env[PaneControlChannel.environmentKey], !controlPipe.isEmpty {
+        if let controlPipe = options.controlPipe {
             io.startControlPipe(at: controlPipe)
         }
 

@@ -178,7 +178,8 @@ public enum HerdrProcess {
 }
 
 extension String {
-    var shellEscaped: String {
+    /// POSIX single-quote quoting, for a string that has to survive `/bin/sh -c`.
+    public var shellEscaped: String {
         "'" + replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 }

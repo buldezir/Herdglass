@@ -35,7 +35,7 @@ To skip the connect sheet, name the target on the command line:
 2. Ensures `herdr server` is running on the remote host (installs nothing; the binary must already be there)
 3. Forwards the remote Unix API socket advertised by `herdr status server`
 4. Speaks Herdr's NDJSON socket API (`session.snapshot`, `events.subscribe`, `pane.focus`)
-5. Renders the focused pane by spawning `HerdrTerm --bridge`, which runs `herdr terminal session control <pane> --takeover` and copies `terminal.frame` ANSI bytes into libghostty
+5. Renders the focused pane by spawning `HerdrTerm --bridge --target <pane> …`, which runs `herdr terminal session control <pane> --takeover` and copies `terminal.frame` ANSI bytes into libghostty
 
 Frame / control JSON (Herdr 0.8.2):
 
@@ -71,7 +71,7 @@ Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becom
 | --- | --- |
 | `--connect <host> [--session <name>]` | Open a window straight onto a host |
 | `--self-test <host> [--session <name>]` | Connect, snapshot, read one control frame, exit |
-| `--bridge` | Internal: the PTY child libghostty spawns for a pane |
+| `--bridge --target <pane>` | Internal: the PTY child libghostty spawns for a pane |
 
 ## License
 
