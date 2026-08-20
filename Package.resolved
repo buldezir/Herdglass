@@ -1,0 +1,15 @@
+{
+  "originHash" : "f510eddfa1c3c4e6215ef1b840a8d7069b8f702b922962f87205f01dfea2ceb6",
+  "pins" : [
+    {
+      "identity" : "ghosttykit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/briannadoubt/GhosttyKit.git",
+      "state" : {
+        "revision" : "92a5e413565e8a5f5d19814a56882cb781555e5a",
+        "version" : "0.8.0"
+      }
+    }
+  ],
+  "version" : 3
+}
