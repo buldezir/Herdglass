@@ -12,7 +12,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let tabBar = TabBarView()
     private let content = SplitContainerView()
     private let splitController = SidebarSplitViewController()
+    /// Behind-window blur for `background-blur`; hidden unless the config asks.
+    private let blur = NSVisualEffectView()
     private var attentionItem: NSToolbarItem?
+    private var splitItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
     private var numberKeyMonitor: Any?
 
@@ -39,13 +42,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.toolbar = buildToolbar()
         window.contentMinSize = NSSize(width: 720, height: 420)
         // Restore where the user last left this window before falling back to
-        // the middle of the screen.
-        if !window.setFrameUsingName("HerdrTermMain") {
+        // the middle of the screen — unless `window-save-state = never`, which
+        // asks for a window that never remembers anything.
+        if GhosttyRuntime.config.saveState == .never {
             window.setContentSize(NSSize(width: 1180, height: 760))
             window.center()
+        } else {
+            if !window.setFrameUsingName("HerdrTermMain") {
+                window.setContentSize(NSSize(width: 1180, height: 760))
+                window.center()
+            }
+            window.setFrameAutosaveName("HerdrTermMain")
         }
-        window.setFrameAutosaveName("HerdrTermMain")
 
+        applyGhosttyConfig()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applyGhosttyConfig),
+            name: GhosttyRuntime.configDidChangeNotification,
+            object: nil
+        )
         installNumberKeyMonitor()
         refresh()
 
@@ -131,10 +147,23 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Tab strip on top, the tab's panes underneath.
     private func buildTerminalArea() -> NSView {
         let container = NSView()
-        for view in [tabBar, content] as [NSView] {
+        blur.blendingMode = .behindWindow
+        blur.material = .underWindowBackground
+        blur.state = .active
+        blur.isHidden = true
+        for view in [blur, tabBar, content] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
+        // The blur is pinned to raw bounds, not the safe area: it has to reach
+        // under the toolbar as well, or a translucent window has a hard edge
+        // across the titlebar.
+        NSLayoutConstraint.activate([
+            blur.topAnchor.constraint(equalTo: container.topAnchor),
+            blur.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            blur.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            blur.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
         // Safe area, not raw bounds: the window uses a full-size content view,
         // so the tab strip would otherwise sit under the toolbar.
         let guide = container.safeAreaLayoutGuide
@@ -148,6 +177,46 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             content.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
         ])
         return container
+    }
+
+    // MARK: - Ghostty config
+
+    /// The window half of the ghostty config: the keys that describe the frame
+    /// around a terminal rather than the terminal itself.
+    ///
+    /// `macos-titlebar-style` only distinguishes `native` from everything else
+    /// here. `transparent` and `tabs` both mean "let the terminal colour reach
+    /// the titlebar", which is one line; `hidden` wants the titlebar gone, and
+    /// this window cannot give that up — the toolbar carries the sidebar's
+    /// tracking separator — so it is treated as `transparent` too.
+    @objc private func applyGhosttyConfig() {
+        guard let window else { return }
+        let config = GhosttyRuntime.config
+
+        window.titlebarAppearsTransparent = config.titlebarStyle != .native
+        window.hasShadow = config.windowShadow
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(button)?.isHidden = !config.windowButtonsVisible
+        }
+
+        // `background-opacity` and `background-blur` only mean anything if the
+        // window stops being opaque; libghostty already draws the surface with
+        // the alpha, and an opaque window behind it just paints it out again.
+        window.isOpaque = !config.isTranslucent
+        window.backgroundColor = config.titlebarStyle == .native && !config.isTranslucent
+            ? .windowBackgroundColor
+            : config.paneBackground
+        blur.isHidden = config.backgroundBlur == 0
+
+        applyToolbarTooltips(config)
+        refresh()
+    }
+
+    /// The Split button names its shortcut, so it has to name the real one —
+    /// ⌘D unless the config moved `new_split:right` somewhere else.
+    private func applyToolbarTooltips(_ config: GhosttyConfig) {
+        splitItem?.toolTip = "Split the active pane to the right"
+            + (config.shortcut(.splitRight).map { " (\($0.display))" } ?? "")
     }
 
     private func buildToolbar() -> NSToolbar {
@@ -194,10 +263,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case Self.splitItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: identifier)
             item.label = "Split"
-            item.toolTip = "Split the active pane to the right (⌘D)"
             item.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: nil)
             item.target = self
             item.action = #selector(splitRight)
+            splitItem = item
+            applyToolbarTooltips(GhosttyRuntime.config)
             return item
         case Self.attentionItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: identifier)
@@ -223,39 +293,53 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Keyboard
 
-    /// ⌘1…⌘9 picks a tab in the selected space, ⌃⌘1…⌃⌘9 picks a space by the
-    /// number Herdr shows for it. Menu items cannot express either (both sets
-    /// change with every snapshot), so it is a monitor — scoped to this window,
-    /// and torn down with it, so a closed window can never swallow another
-    /// window's keystrokes.
+    /// Picking a tab or a space by number. Menu items cannot express either
+    /// (both sets change with every snapshot), so it is a monitor — scoped to
+    /// this window, and torn down with it, so a closed window can never swallow
+    /// another window's keystrokes.
+    ///
+    /// The tab keys are whatever the ghostty config binds `goto_tab:1`…
+    /// `goto_tab:9` to, ⌘1…⌘9 by default. Spaces stay on ⌃⌘1…⌃⌘9: a Herdr
+    /// workspace has no ghostty counterpart, so there is no keybind to read, and
+    /// a tab key that collides with it wins because tabs are checked first.
     private func installNumberKeyMonitor() {
         numberKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
-            // `.numericPad` rides along on the keypad digits, and caps lock is
-            // never part of the shortcut; anything else means this is not ⌘n.
-            let modifiers = event.modifierFlags
-                .intersection(.deviceIndependentFlagsMask)
-                .subtracting([.numericPad, .capsLock])
-            guard modifiers == .command || modifiers == [.command, .control] else { return event }
+            // Only the four modifiers a ghostty trigger can carry: `.numericPad`
+            // rides along on the keypad digits, `.function` on anything above the
+            // row of numbers, and caps lock is never part of a shortcut.
+            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            // Out before doing any work on an ordinary keystroke: every tab and
+            // space key carries at least one of ⌘/⌃/⌥, and this monitor sees
+            // everything the user types into a terminal.
+            guard !modifiers.intersection([.command, .control, .option]).isEmpty else { return event }
+            // Unshifted, so a `shift+cmd+1` binding is looked up as "1" rather
+            // than as whatever that key types with shift held — which is what
+            // ghostty's own trigger for it says.
             guard
-                let characters = event.charactersIgnoringModifiers,
-                let number = UInt(characters), (1...9).contains(number),
+                let characters = (event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers)?
+                    .lowercased(),
                 let session = self.connections.selectedSession
             else { return event }
+            let shortcut = GhosttyConfig.Shortcut(keyEquivalent: characters, modifiers: modifiers)
 
-            if modifiers == .command {
+            if let number = GhosttyRuntime.config.tabShortcuts[shortcut] {
                 let tabs = session.tabsInSelectedSpace
                 guard let tab = tabs.first(where: { $0.number == number })
                     ?? tabs.dropFirst(Int(number) - 1).first
                 else { return event }
                 self.select(focusTerminal: true) { $0.selectTab(tab.tabId) }
-            } else {
-                let spaces = session.spaces
-                guard let space = spaces.first(where: { $0.number == number })
-                    ?? spaces.dropFirst(Int(number) - 1).first
-                else { return event }
-                self.select(focusTerminal: true) { $0.selectSpace(space.workspaceId) }
+                return nil
             }
+
+            guard modifiers == [.command, .control],
+                  let number = UInt(characters), (1...9).contains(number)
+            else { return event }
+            let spaces = session.spaces
+            guard let space = spaces.first(where: { $0.number == number })
+                ?? spaces.dropFirst(Int(number) - 1).first
+            else { return event }
+            self.select(focusTerminal: true) { $0.selectSpace(space.workspaceId) }
             return nil
         }
     }
@@ -345,11 +429,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     /// Closing a tab destroys its panes on the server, so ask first when there
-    /// is more than a bare shell in it.
+    /// is more than a bare shell in it — unless `confirm-close-surface` says to
+    /// ask every time, or never to ask at all.
     private func confirmCloseTab(_ tabId: String) {
         guard let session = connections.selectedSession, let window else { return }
         let panes = session.panes(inTab: tabId)
-        let needsAsking = panes.count > 1 || panes.contains { $0.agentStatus != .unknown }
+        let needsAsking: Bool
+        switch GhosttyRuntime.config.confirmClose {
+        case .never:
+            needsAsking = false
+        case .always:
+            needsAsking = true
+        case .unlessTrivial:
+            needsAsking = panes.count > 1 || panes.contains { $0.agentStatus != .unknown }
+        }
         guard needsAsking else {
             session.closeTab(tabId)
             return
@@ -407,6 +500,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
+        NotificationCenter.default.removeObserver(self, name: GhosttyRuntime.configDidChangeNotification, object: nil)
         if let numberKeyMonitor {
             NSEvent.removeMonitor(numberKeyMonitor)
             self.numberKeyMonitor = nil
@@ -448,7 +542,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         let session = connections.selectedSession
         let pane = session?.selectedPane
 
-        window.title = pane?.displayName ?? session?.selectedSpace?.label ?? "herdr-term"
+        // `title` in the ghostty config is a fixed title for every window; with
+        // nothing set, the window is named after what it is showing.
+        window.title = GhosttyRuntime.config.title
+            ?? pane?.displayName ?? session?.selectedSpace?.label ?? "herdr-term"
         window.subtitle = subtitle(session: session, pane: pane)
         attentionItem?.isEnabled = connections.hasAttention
         attentionItem?.image = NSImage(
@@ -524,7 +621,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 return ("No spaces", "\(target) has no workspaces yet. Start one with `herdr` on the host.", "rectangle.dashed")
             }
             if session.selectedTabId == nil {
-                return ("No tabs", "This space has no tabs. Press ⌘T to open one.", "rectangle.dashed")
+                let key = GhosttyRuntime.config.shortcut(.newTab)?.display ?? "⌘T"
+                return ("No tabs", "This space has no tabs. Press \(key) to open one.", "rectangle.dashed")
             }
             return ("No panes", "This tab has no panes.", "rectangle.dashed")
         }

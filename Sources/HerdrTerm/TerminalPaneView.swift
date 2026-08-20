@@ -27,30 +27,60 @@ final class TerminalPaneView: NSView {
 
     private let placeholder = PlaceholderView()
     private let ring = AttentionRingView()
+    /// `unfocused-split-opacity` made visible: a scrim over the panes of a split
+    /// that do not have the keyboard.
+    private let scrim = ScrimView()
+    /// Hovering a pane focuses it when `focus-follows-mouse` is set.
+    private var hoverArea: NSTrackingArea?
+    /// Whether this pane is one of the dimmed ones, kept so a config reload can
+    /// re-apply a changed `unfocused-split-opacity` without waiting for the next
+    /// snapshot to call `decorate`.
+    private var dimmed = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         placeholder.translatesAutoresizingMaskIntoConstraints = false
         addSubview(placeholder)
-        ring.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(ring)
+        for view in [scrim, ring] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: topAnchor),
+                view.bottomAnchor.constraint(equalTo: bottomAnchor),
+                view.leadingAnchor.constraint(equalTo: leadingAnchor),
+                view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+        }
         NSLayoutConstraint.activate([
             placeholder.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             placeholder.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
-            ring.topAnchor.constraint(equalTo: topAnchor),
-            ring.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ring.leadingAnchor.constraint(equalTo: leadingAnchor),
-            ring.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(ghosttyConfigDidChange),
+            name: GhosttyRuntime.configDidChangeNotification,
+            object: nil
+        )
         showPlaceholder(title: "No pane attached", detail: "Connect to a Herdr host to attach a pane.")
     }
 
-    /// Borders: the loud one when an agent in this pane wants attention, a quiet
-    /// one to say which pane of a split has the keyboard.
-    func decorate(active: Bool, attention: Bool, status: AgentStatus) {
-        ring.update(attention: attention, active: active, status: status)
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// Borders and dimming. The loud border is attention, the quiet one says
+    /// which pane of a split has the keyboard, and the scrim is ghostty's
+    /// `unfocused-split-opacity` on the panes that do not.
+    func decorate(active: Bool, inSplit: Bool, attention: Bool, status: AgentStatus) {
+        ring.update(attention: attention, active: inSplit && active, status: status)
+        dimmed = inSplit && !active
+        applyScrim()
+    }
+
+    private func applyScrim() {
+        scrim.update(dim: dimmed ? GhosttyRuntime.config.unfocusedSplitDim : 0)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -58,7 +88,33 @@ final class TerminalPaneView: NSView {
     override var wantsUpdateLayer: Bool { true }
 
     override func updateLayer() {
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        layer?.backgroundColor = GhosttyRuntime.config.paneBackground.cgColor
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyGhosttyColors()
+    }
+
+    /// A reload can change the palette, the surface config, or both.
+    @objc private func ghosttyConfigDidChange() {
+        if let session { GhosttyRuntime.apply(to: session) }
+        applyGhosttyColors()
+        applyScrim()
+    }
+
+    /// The terminal's own colours, on everything this app draws around it.
+    ///
+    /// The GhosttyKit view paints its layer with a palette of its own, set in
+    /// `viewDidMoveToWindow` and on every appearance change rather than in
+    /// `updateLayer`, so overwriting it here sticks — and it has to be
+    /// overwritten, or the strip of window padding around the surface is a
+    /// different colour from the terminal in it.
+    private func applyGhosttyColors() {
+        let background = GhosttyRuntime.config.paneBackground
+        needsDisplay = true
+        terminalView?.layer?.backgroundColor = background.cgColor
+        placeholder.tint(GhosttyRuntime.config.terminalForeground)
     }
 
     func showPlaceholder(title: String, detail: String, symbol: String = "rectangle.dashed") {
@@ -169,6 +225,7 @@ final class TerminalPaneView: NSView {
 
         self.session = session
         terminalView = view
+        applyGhosttyColors()
         GhosttyRuntime.paneAttached()
         focusTerminal()
     }
@@ -179,6 +236,32 @@ final class TerminalPaneView: NSView {
     private func failAttach(paneId: String, detail: String) {
         showPlaceholder(title: "Terminal unavailable", detail: detail, symbol: "exclamationmark.triangle")
         detachedPaneId = paneId
+    }
+
+    /// `focus-follows-mouse`. Kept on this view rather than on the GhosttyKit
+    /// one, which has tracking areas of its own for the terminal's mouse
+    /// reporting; entering a pane has to reach Herdr, not just the surface.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea {
+            removeTrackingArea(hoverArea)
+            self.hoverArea = nil
+        }
+        guard GhosttyRuntime.config.focusFollowsMouse else { return }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(area)
+        hoverArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        super.mouseEntered(with: event)
+        guard GhosttyRuntime.config.focusFollowsMouse, terminalView != nil else { return }
+        onActivate?()
+        focusTerminal()
     }
 
     /// Keystrokes should land in the terminal, not in whatever list the user
@@ -266,14 +349,11 @@ private final class PlaceholderView: NSStackView {
         spacing = 8
 
         icon.symbolConfiguration = .init(pointSize: 26, weight: .regular)
-        icon.contentTintColor = .tertiaryLabelColor
 
         title.font = .systemFont(ofSize: 13, weight: .medium)
-        title.textColor = .secondaryLabelColor
         title.alignment = .center
 
         detail.font = .systemFont(ofSize: 11)
-        detail.textColor = .tertiaryLabelColor
         detail.alignment = .center
         detail.maximumNumberOfLines = 4
 
@@ -283,10 +363,52 @@ private final class PlaceholderView: NSStackView {
 
     required init?(coder: NSCoder) { nil }
 
+    /// Placeholders sit on the terminal background, so they take their contrast
+    /// from ghostty's `foreground` rather than from the label colours — those
+    /// answer to the window's appearance, which a terminal palette need not
+    /// agree with.
+    func tint(_ foreground: NSColor) {
+        icon.contentTintColor = foreground.withAlphaComponent(0.4)
+        title.textColor = foreground.withAlphaComponent(0.75)
+        detail.textColor = foreground.withAlphaComponent(0.5)
+    }
+
     func configure(title: String, detail: String, symbol: String) {
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         self.title.stringValue = title
         self.detail.stringValue = detail
+    }
+}
+
+/// `unfocused-split-opacity`, drawn rather than applied: the pane underneath is
+/// a live terminal, so it is covered with `unfocused-split-fill` at the
+/// complement of the configured opacity instead of having its own alpha changed.
+private final class ScrimView: NSView {
+    private var dim: Double = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    /// Never take a click away from the terminal underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        let config = GhosttyRuntime.config
+        let fill = config.unfocusedSplitFill ?? config.terminalBackground
+        layer?.backgroundColor = fill.withAlphaComponent(CGFloat(dim)).cgColor
+    }
+
+    func update(dim: Double) {
+        self.dim = dim
+        isHidden = dim <= 0
+        needsDisplay = true
     }
 }
 

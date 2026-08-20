@@ -151,7 +151,8 @@ final class SplitContainerView: NSView {
         for (paneId, view) in paneViews {
             let pane = panesById[paneId]
             view.decorate(
-                active: isSplit && paneId == model.activePaneId,
+                active: paneId == model.activePaneId,
+                inSplit: isSplit,
                 attention: model.unreadPaneIds.contains(paneId),
                 status: pane?.agentStatus ?? .unknown
             )
@@ -234,6 +235,13 @@ private final class SplitNodeView: NSSplitView {
     }
 
     required init?(coder: NSCoder) { nil }
+
+    /// `split-divider-color`, or ghostty's own derivation from the background
+    /// when the config does not name one. Overriding this is how `NSSplitView`
+    /// takes a colour; it has no setter.
+    override var dividerColor: NSColor {
+        GhosttyRuntime.config.effectiveSplitDividerColor
+    }
 
     /// The ratio Herdr says this split has. Applied on the next layout pass, so
     /// it lands after the split view knows how big it is.

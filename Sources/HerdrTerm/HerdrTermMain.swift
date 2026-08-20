@@ -13,6 +13,24 @@ enum HerdrTermMain {
             return
         }
 
+        // What the app took from `~/.config/ghostty/config`; the counterpart to
+        // `ghostty +show-config`, and the quickest way to see whether a key we
+        // honour actually arrived.
+        if arguments.contains("--show-ghostty-config") {
+            MainActor.assumeIsolated {
+                // The menu is built for real, so the dump shows the shortcuts
+                // the app will actually have, not just the ones we read.
+                _ = NSApplication.shared
+                let config = GhosttyRuntime.config
+                let menu = MainMenu.build()
+                menu.applyGhosttyShortcuts(config)
+                print(config.summary)
+                print("menu")
+                print(menu.shortcutSummary(config))
+            }
+            return
+        }
+
         let options = LaunchOptions(arguments: arguments)
         if options.isSelfTest {
             SelfTest.run(host: options.host ?? "local", session: options.session)

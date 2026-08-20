@@ -63,7 +63,46 @@ Requests on the API socket are **one-shot**: Herdr answers a single request and 
 
 Only the selected tab of the selected host is rendered, so only its panes hold bridges — switching tabs or hosts releases the previous ones.
 
+## Your ghostty config
+
+The terminal is libghostty, so it already reads `~/.config/ghostty/config` (or
+`~/Library/Application Support/com.mitchellh.ghostty/config`) for fonts, colours,
+themes and everything it renders. herdr-term reads the rest of that file too, for
+the settings that describe a window rather than a terminal — you configure this
+app by configuring ghostty:
+
+| Key | What it does here |
+| --- | --- |
+| `background`, `foreground` | The colour behind a terminal, and the text on the placeholders that sit there |
+| `background-opacity`, `background-blur` | A translucent, blurred window — the whole window, not just the surface |
+| `split-divider-color` | The divider between panes of a split (derived from `background` when unset, as in ghostty) |
+| `unfocused-split-opacity`, `unfocused-split-fill` | Dims the panes of a split that do not have the keyboard |
+| `window-theme` | Light or dark chrome. `auto`, the default, matches the chrome to the terminal background — so a dark terminal gets a dark sidebar |
+| `macos-titlebar-style` | `native`, or a transparent titlebar in the terminal's colour (`tabs` and `hidden` both read as transparent; the window needs its toolbar) |
+| `macos-window-buttons`, `macos-window-shadow` | Traffic lights, window shadow |
+| `title` | A fixed window title instead of the selected pane's |
+| `window-save-state` | `never` stops the window remembering its position |
+| `confirm-close-surface` | `false` never asks before closing a tab, `always` always does |
+| `focus-follows-mouse` | Hovering a pane of a split moves the keyboard into it |
+| `keybind` | Moves this app's menu shortcuts. `new_tab`, `new_window`, `close_surface`, `close_window`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `goto_tab:1`…`9`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
+
+To see exactly what arrived:
+
+```bash
+swift build --product HerdrTerm && .build/debug/HerdrTerm --show-ghostty-config
+```
+
+Anything ghostty owns that Herdr owns here instead — splits, zoom, scrollback,
+tab order — is not read: the server decides those, and the GUI asks it to.
+`mouse-scroll-multiplier` and `quit-after-last-window-closed` are also skipped;
+`AGENTS.md` says why.
+
+Changing the config takes effect on **Reload Terminal Config** (`⇧⌘,` by
+default) — colours, window chrome and menu shortcuts all re-read.
+
 ## Shortcuts
+
+Defaults, and all of them movable with `keybind` (see above).
 
 | Key | Action |
 | --- | --- |
@@ -80,10 +119,11 @@ Only the selected tab of the selected host is rendered, so only its panes hold b
 | `⇧⌘U` | Jump to the pane that needs attention (any host) |
 | `⌃⌘S` | Toggle sidebar |
 | `⌃⌘F` | Full screen |
+| `⌘,` / `⇧⌘,` | Open / reload the ghostty config |
 
 Clicking a pane moves the keyboard into it — that is also how the active pane of a split changes, and Herdr is told about it. Arrow keys browse the sidebar without stealing focus. The sidebar is draggable between 180 and 460 pt and its width is remembered.
 
-Closing a tab asks first when it holds more than a bare shell, because `tab.close` closes its panes on the server.
+Closing a tab asks first when it holds more than a bare shell, because `tab.close` closes its panes on the server — `confirm-close-surface` in your ghostty config changes that to never or always.
 
 Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becomes a `terminal.scroll` on the server, which then sends the frame for the new viewport.
 
@@ -93,6 +133,7 @@ Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becom
 | --- | --- |
 | `--connect <host> [--session <name>]` | Open a window straight onto a host |
 | `--self-test <host> [--session <name>]` | Connect, snapshot, read one control frame, exit |
+| `--show-ghostty-config` | Print the ghostty settings this app honours, and the menu they produced |
 | `--bridge --target <pane>` | Internal: the PTY child libghostty spawns for a pane (one per visible pane) |
 
 ## License

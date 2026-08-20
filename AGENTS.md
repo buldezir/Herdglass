@@ -7,11 +7,11 @@ Do not fork or copy [cmux](https://github.com/manaflow-ai/cmux) (AGPL). Renderin
 ## Layout
 
 - `Sources/HerdrClient/` — SSH attach, Unix JSON-RPC, `terminal session control` bridge, models, split-layout tree (`Layout.swift`)
-- `Sources/HerdrTerm/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view
+- `Sources/HerdrTerm/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`)
 - `Tests/HerdrClientTests/` — parsing, framing, and RPC-transport tests
 - `Scripts/dev.sh` — build `.build/HerdrTerm.app` and optionally `--run` (extra args pass through)
 
-Entry: `HerdrTermMain.swift`. Flags: `--bridge` (PTY child for libghostty), `--connect <host>` (skip the connect sheet), `--self-test <host>`.
+Entry: `HerdrTermMain.swift`. Flags: `--bridge` (PTY child for libghostty), `--connect <host>` (skip the connect sheet), `--self-test <host>`, `--show-ghostty-config` (what the app took from the user's ghostty config, and the menu it produced).
 
 ## Architecture
 
@@ -28,6 +28,14 @@ GUI  --spawns-->  HerdrTerm --bridge  --herdr terminal session control-->  forwa
 4. Forward **both** `herdr.sock` (API) and `herdr-client.sock` (direct terminal attach)
 5. Focused pane: Ghostty launches `HerdrTerm --bridge --target <pane> …`, which speaks NDJSON `terminal.frame` / `terminal.input` / `terminal.resize` / `terminal.scroll` / `terminal.release`
 6. Scroll wheel: the GUI writes `terminal.scroll` to a per-pane FIFO (`PaneControlChannel`, path passed as `--control-pipe`) that the bridge forwards
+
+The app is a ghostty client as much as a Herdr one, so it reads the user's own
+`ghostty` config rather than inventing settings of its own: `GhosttyConfig`
+snapshots the keys that describe a *window* — colours, opacity, titlebar,
+`window-theme`, `confirm-close-surface`, `focus-follows-mouse` — plus the
+`keybind`s for the actions this app can perform, and `GhosttyRuntime` owns the
+`ghostty_config_t` everything reads from. `--show-ghostty-config` prints the lot,
+including which menu shortcuts came from the config and which are ours.
 
 `ConnectionsController` owns the window's hosts — one `SessionController` per host, each with its own SSH master, event stream and selection (space → tab → pane). Only the selected host is `isVisible`, so only its panes have bridges. `MainWindowController` turns all of that into a `SidebarModel`, a `TabBarModel` and a `SplitContainerView.Model`; `StatusStyle` is the only place agent status becomes a color or a word.
 
@@ -50,7 +58,7 @@ before touching `HerdrRPC` or `SessionController`.
 
 - **A rejected subscription arrives as a line on the stream, not as a thrown error.** `subscribe` therefore reads the `subscription_started` acknowledgement synchronously and throws on anything else. Without that, a rejection is indistinguishable from a quiet session: the stream stays open, no event ever lands, and the poll fallback never engages. Covered by `subscribeThrowsWhenTheServerRejectsTheSubscription`.
 - **Keep the poll behind the event stream.** It is not redundant: agent status is only pushed by the pane-scoped `pane.agent_status_changed`, which a session-wide client cannot subscribe to, so attention rings would otherwise depend on some other event happening to fire. `SessionController` polls every 2 s alongside events, and every 0.9 s when the server refuses to subscribe us.
-- **libghostty ignores a surface's `command` and `env_vars`.** `ghostty_surface_config_s` has both fields, GhosttyKit fills them in, and libghostty drops them: the surface runs the login shell instead, so the pane showed a fresh local zsh and no bridge ever started — which reads as "my herdr session was not restored" *and* as "scrolling is broken", because the wheel handler is redirected to a FIFO nothing is reading. It is not an ABI mismatch (`working_directory`, the field before `command` in the same struct, is honoured, and the pointer is non-null at the `ghostty_surface_new` call) and not version specific (0.8.0's libghostty and a rebuild from ghostty `54ac5fd21` both drop it). The app-level config *is* honoured, so `GhosttyRuntime.useSurfaceCommand` clones the config GhosttyKit loaded, appends `command = shell:…`, and pushes it with `ghostty_app_update_config` before the surface exists. Everything the bridge needs therefore travels in that command line (`BridgeOptions.argv`), never in the surface environment.
+- **libghostty ignores a surface's `command` and `env_vars`.** `ghostty_surface_config_s` has both fields, GhosttyKit fills them in, and libghostty drops them: the surface runs the login shell instead, so the pane showed a fresh local zsh and no bridge ever started — which reads as "my herdr session was not restored" *and* as "scrolling is broken", because the wheel handler is redirected to a FIFO nothing is reading. It is not an ABI mismatch (`working_directory`, the field before `command` in the same struct, is honoured, and the pointer is non-null at the `ghostty_surface_new` call) and not version specific (0.8.0's libghostty and a rebuild from ghostty `54ac5fd21` both drop it). The app-level config *is* honoured, so `GhosttyRuntime.useSurfaceCommand` clones the config we loaded, appends `command = shell:…`, and pushes it with `ghostty_app_update_config` before the surface exists. Everything the bridge needs therefore travels in that command line (`BridgeOptions.argv`), never in the surface environment.
 - **A surface can fail to be created, and it says so by being null.** `ghostty_surface_new` returns null when the view has no screen — libghostty builds a `CVDisplayLink` from it, and `CVDisplayLinkCreateWithCGDisplays error -6661 ... display count (0)` surfaces as `error.OutOfMemory` in libghostty's log. A locked screen is enough to trigger it. So attach the view to the window *before* `session.attach`, and check `session.surface` afterwards: an unchecked nil renders as a working-but-empty terminal.
 - **Scrolling cannot ride the PTY.** Everything the surface writes to the bridge's stdin becomes `terminal.input`, i.e. keystrokes for the program in the pane, and libghostty's own scrollback is empty because it only ever sees full viewport frames. Herdr owns the history and moves it only for `{"type":"terminal.scroll","direction":"up"|"down","lines":>0,"source":"wheel"|"page_key"}` — hence the FIFO side channel, and hence `TerminalPaneView` replacing the view's `scrollWheel` handler instead of letting libghostty handle the wheel. Both ends open the FIFO `O_RDWR` so an idle peer never reads as EOF. `controlChannelFramesScrollCommandsAsNDJSON` covers the framing; `lines: 0` and a bad `direction` make Herdr drop the command.
 - **The bridge must put its PTY into raw mode.** libghostty hands the child a cooked terminal: `icanon` holds keystrokes until Enter (a TUI in the pane never sees an arrow key, or anything else, until you hit return), `echo` paints them locally over Herdr's frames, `isig` turns ^C into a signal that kills the bridge — its `herdr terminal session control` child then dies writing frames and prints `BrokenPipe` into the pane — and `ixon` eats ^S/^Q. `ControlBridge.enterRawMode()` does this before spawning herdr and restores the old settings afterwards. `stty -f /dev/ttysNN -a` on the bridge's tty must show `-icanon -isig -echo`.
@@ -60,6 +68,12 @@ before touching `HerdrRPC` or `SessionController`.
 - **A divider ratio may only be published from the drag itself.** `NSSplitView` reports every resize through `didResizeSubviews`, window resizes included — the same trap as the sidebar width. `SplitNodeView` instead reads the ratio after `super.mouseDown` returns, which is exactly the span of the divider's tracking loop, and re-applies the model ratio in `layout()` only when it differs from what was last applied (otherwise the layout pass fights the drag).
 - **Rebuild the pane hierarchy on structure, not on ratios.** `LayoutNode.structureSignature` omits ratios; keying the rebuild on the full tree would tear down and respawn every bridge in the tab on each divider drag. `TerminalPaneView`s are cached by pane id and moved between hierarchies, and only a pane that left the tree is torn down.
 - **The per-surface command is global, and that is still safe for several panes.** `GhosttyRuntime.useSurfaceCommand` pushes the bridge command through the *app* config before each `ghostty_surface_new`, so attaching N panes in one pass looks like a race. It is not: `ghostty_app_update_config` takes effect before the next surface is created, and a four-pane split really does produce four bridges with four distinct `--target`s (`pgrep -fl 'HerdrTerm --bridge'`). Attach panes on the main thread, one after another, and do not "optimise" this into anything concurrent.
+- **`ghostty_config_get` writes through a `void*`, so the Swift type has to match the Zig field.** libghostty decides the type from the config field (`src/config/c_get.zig`): `bool`, `c_uint` for `u8`/`u32`, `c_short` for `i16`, `f64`, `ghostty_config_color_s` for a colour, and `const char*` for both strings *and* enum tags. Read a key into something smaller than it writes and you corrupt the stack, silently. It returns false — writing nothing — for a key the C API does not expose and for an optional that is unset, which is how `split-divider-color` says "derive one". Plain Zig structs with no `cval` are simply unreachable: that is why `mouse-scroll-multiplier` and `config-file` are not honoured, and why `theme` has to be spotted by reading the config text.
+- **Do not load the config through GhosttyKit.** `GhosttyTerminalHost(loadDefaultTheme: true)` — which is what `GhosttyTerminalHost.shared` is — writes a Rosé Pine theme into Application Support and loads it *after* the user's config whenever no config file in the ghostty config directory has a `theme =` line. It overrides `background`, `foreground`, `palette`, `background-opacity` and `background-blur`, so an app that reads those back is reading GhosttyKit's opinion, not the user's. `GhosttyRuntime` therefore builds the config itself (`ghostty_config_new` → `load_default_files` → `load_recursive_files` → `finalize`) and pushes it with `ghostty_app_update_config`; `host.reloadConfig()` is unused for the same reason — it hardcodes the injection and keeps the result in a property we cannot reach. `ghostty_config_load_cli_args` stays out too: our argv is `--connect`/`--bridge`, not ghostty flags.
+- **A light/dark `theme` pair cannot be resolved through the C API.** libghostty chooses between the halves with its *conditional* config state, which has no C entry point, so `ghostty_config_get` always answers from the default state — `light`. `background` and `foreground` are then the light half whatever the terminal is drawing, which is why `GhosttyConfig.hasLightDarkTheme` (a text scan of the config for a `theme =` with a comma, colon or equals) switches the chrome to AppKit's semantic colours instead of guessing. The appearance is safe without it: ghostty's own `finalize` rewrites `window-theme = auto` to `system` for a pair (`Config.zig`, "theme specifying light/dark changes window-theme from auto").
+- **A menu key equivalent is consumed before the surface sees the key.** So a `keybind` trigger with no ⌘/⌃/⌥ must never become one: honouring `keybind = a=…` would stop the user typing that letter anywhere in the app, and libghostty already handles those inside the surface. `GhosttyConfig.shortcut(_:_:)` drops them, along with `catch_all` and the physical keys that depend on the keyboard layout. An unbound action comes back as a zeroed trigger, i.e. physical `unidentified`.
+- **`quit-after-last-window-closed` is deliberately not honoured.** It is readable, but ghostty's macOS default is *false* while this app has always terminated with its last window, and the C API cannot tell a default apart from a value the user typed — so honouring it would leave a Dock icon behind for everyone who never set it. Anything else with that shape (a ghostty default that disagrees with an existing deliberate choice here) needs the same judgement, not a reflex.
+- **`NSSplitView.dividerColor` has no setter.** `split-divider-color` is applied by overriding the property on `SplitNodeView`, which is how AppKit intends it; assigning to it does not compile.
 - Remote scripts must go to `ssh host bash -s` on **stdin**. Extra argv after the host is joined with spaces and executed by zsh, which splits on `;`.
 - `HERDR_SOCKET_PATH=.../herdr.sock` makes `herdr terminal session control` open `.../herdr-client.sock`. Forward both or control fails with "No such file or directory".
 - Never `FileHandle.write` to a pipe that a child may have closed; EPIPE becomes an ObjC exception and `abort()`s. Use `writeIgnoringBrokenPipe` and keep `HerdrProcess.setUp()` (SIGPIPE ignored) on every entry point.
@@ -70,7 +84,9 @@ before touching `HerdrRPC` or `SessionController`.
 
 ## UI conventions
 
-- No hardcoded colors. Semantic `NSColor`s and `StatusStyle` only, so light mode works; the sidebar's translucency comes from `NSSplitViewItem(sidebarWithViewController:)`.
+- No hardcoded colors. There are exactly two sources: the user's ghostty palette for the *terminal area* (`GhosttyConfig.terminalBackground` / `.terminalForeground`, the split divider and the unfocused-split scrim), and semantic `NSColor`s plus `StatusStyle` for everything else. The chrome stays semantic on purpose — ghostty has no opinion about a sidebar — and `window-theme` is the lever that makes it light or dark, which is why forcing the appearance is enough and tinting the sidebar is not. The sidebar's translucency comes from `NSSplitViewItem(sidebarWithViewController:)`.
+- A translucent window is `background-opacity`/`background-blur`, and it only works if *everything* behind the surface is translucent too: `window.isOpaque = false`, the window background and the pane layer carry the alpha, and the blur is an `NSVisualEffectView` pinned to raw bounds so it reaches under the toolbar. An opaque layer anywhere in that stack paints the desktop back out and the setting looks ignored.
+- Ghostty settings that describe a *window* are honoured; ones that describe a *pane* usually belong to Herdr instead. `confirm-close-surface` and `focus-follows-mouse` are ours to act on; scrollback, padding, fonts and splits are libghostty's or the server's. When in doubt, ask whether the GUI is the only thing that could implement it.
 - The content pane is pinned to `safeAreaLayoutGuide`, not raw bounds — the window uses `.fullSizeContentView` and content would otherwise sit under the toolbar.
 - Nothing inside the sidebar may have an opinion about its width. A subview pinned to both edges hugs at 250, which ties with `NSSplitViewItem.holdingPriority`, and the divider then silently refuses to drag at all — that is how `emptyLabel` froze the sidebar at `minimumThickness`. Give any such view hugging and compression resistance of 1.
 - `NSSplitViewController` ignores `splitView.autosaveName`: on launch it lays the sidebar out at AppKit's default thickness and autosaves *that* over the width the user dragged to. `SidebarSplitViewController` persists the width itself, and both halves are load-bearing — it restores only once the window has a frame wide enough to honour the stored width (the first layout pass runs narrower than the restored frame and would clamp it to `minimumThickness`), and it saves only when the mouse is down with the pointer on the divider, because `didResizeSubviewsNotification` also fires for a window resize that squeezes the sidebar.
@@ -88,10 +104,28 @@ before touching `HerdrRPC` or `SessionController`.
 ```bash
 swift test --filter HerdrClientTests
 swift build --product HerdrTerm
+.build/debug/HerdrTerm --show-ghostty-config
 # needs a running herdr server:
 .build/debug/HerdrTerm --self-test local
 ./Scripts/dev.sh --run --connect local
 ```
+
+`--show-ghostty-config` is the whole ghostty-config surface in one screen: every
+key we read with the value we resolved, and every menu shortcut with whether it
+came from a `keybind` or from this app. Point it at a scratch config rather than
+editing the user's — ghostty honours `XDG_CONFIG_HOME`:
+
+```bash
+mkdir -p /tmp/ghosttytest/ghostty
+printf 'background = #101820\nwindow-theme = light\nkeybind = cmd+e=new_split:right\n' \
+  > /tmp/ghosttytest/ghostty/config
+XDG_CONFIG_HOME=/tmp/ghosttytest .build/debug/HerdrTerm --show-ghostty-config
+```
+
+A config key that reads back as its default when the file clearly sets it is
+either unexposed by the C API (`ghostty_config_get` returned false) or being
+overridden by a theme loaded after it — check `ghostty +show-config` for what
+ghostty itself ended up with.
 
 A pane showing a local shell prompt (rather than the remote pane's content)
 means the bridge never started. `pgrep -f 'HerdrTerm --bridge'` is empty and the
