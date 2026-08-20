@@ -2,18 +2,19 @@ import AppKit
 import HerdrClient
 
 @MainActor
-final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation, SessionControllerDelegate {
+final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolbarDelegate, NSMenuItemValidation,
+    ConnectionsControllerDelegate {
     /// Lets the app delegate stop retaining a window that is on its way out.
     var onClose: ((MainWindowController) -> Void)?
 
-    private let session = SessionController()
+    private let connections = ConnectionsController()
     private let sidebar = SidebarView()
-    private let terminal = TerminalPaneView()
-    private let ring = AttentionRingView()
+    private let tabBar = TabBarView()
+    private let content = SplitContainerView()
     private let splitController = SidebarSplitViewController()
     private var attentionItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
-    private var workspaceKeyMonitor: Any?
+    private var numberKeyMonitor: Any?
 
     convenience init(initialTarget: ConnectTarget? = nil) {
         let window = NSWindow(
@@ -24,16 +25,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         )
         self.init(window: window)
 
-        session.delegate = self
-        sidebar.onSelectWorkspace = { [weak self] id, source in
-            self?.select(focusTerminal: source == .pointer) { $0.selectWorkspace(id) }
-        }
-        sidebar.onSelectPane = { [weak self] id, source in
-            self?.select(focusTerminal: source == .pointer) { $0.selectPane(id) }
-        }
-        terminal.onDetach = { [weak self] in
-            self?.refresh()
-        }
+        connections.delegate = self
+        wireSidebar()
+        wireTabBar()
+        wireContent()
 
         window.delegate = self
         window.title = "herdr-term"
@@ -51,17 +46,62 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         window.setFrameAutosaveName("HerdrTermMain")
 
-        installWorkspaceKeyMonitor()
+        installNumberKeyMonitor()
         refresh()
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // `--connect host` skips straight to the host; otherwise ask.
+            // `--connect host` skips straight to the host; otherwise ask, unless
+            // there are remembered hosts to pick from in the sidebar.
             if let initialTarget {
-                self.session.connect(initialTarget)
-            } else {
+                self.connections.connect(initialTarget)
+            } else if self.connections.connections.isEmpty {
                 self.showConnectSheet()
             }
+        }
+    }
+
+    // MARK: - Wiring
+
+    private func wireSidebar() {
+        sidebar.onSelectHost = { [weak self] id, source in
+            guard let self else { return }
+            self.connections.select(id)
+            if source == .pointer { self.content.focusActivePane() }
+        }
+        sidebar.onSelectSpace = { [weak self] rowId, source in
+            guard let self, let (connectionId, workspaceId) = Self.spaceRow(rowId) else { return }
+            if self.connections.selectedConnectionId != connectionId {
+                self.connections.select(connectionId)
+            }
+            self.select(focusTerminal: source == .pointer) { $0.selectSpace(workspaceId) }
+        }
+        sidebar.onAddHost = { [weak self] in self?.showConnectSheet() }
+        sidebar.onReconnectHost = { [weak self] id in self?.connections.reconnect(id) }
+        sidebar.onDisconnectHost = { [weak self] id in self?.connections.disconnect(id) }
+        sidebar.onForgetHost = { [weak self] id in self?.confirmForget(id) }
+        sidebar.onNewSpace = { [weak self] id in
+            self?.connections.connection(id: id)?.session.newSpace()
+        }
+    }
+
+    private func wireTabBar() {
+        tabBar.onSelect = { [weak self] tabId in
+            self?.select(focusTerminal: true) { $0.selectTab(tabId) }
+        }
+        tabBar.onClose = { [weak self] tabId in self?.confirmCloseTab(tabId) }
+        tabBar.onNew = { [weak self] in self?.newTab(nil) }
+    }
+
+    private func wireContent() {
+        content.onActivatePane = { [weak self] paneId in
+            guard let session = self?.connections.selectedSession else { return }
+            guard session.selectedPaneId != paneId else { return }
+            session.selectPane(paneId)
+        }
+        content.onPaneDetached = { [weak self] in self?.refresh() }
+        content.onSplitRatioChanged = { [weak self] path, ratio in
+            self?.connections.selectedSession?.setSplitRatio(path: path, ratio: ratio)
         }
     }
 
@@ -88,21 +128,25 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return splitController
     }
 
+    /// Tab strip on top, the tab's panes underneath.
     private func buildTerminalArea() -> NSView {
         let container = NSView()
-        for view in [terminal, ring] {
+        for view in [tabBar, content] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
-            // Safe area, not raw bounds: the window uses a full-size content
-            // view, so the top rows would otherwise sit under the toolbar.
-            let guide = container.safeAreaLayoutGuide
-            NSLayoutConstraint.activate([
-                view.topAnchor.constraint(equalTo: guide.topAnchor),
-                view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-                view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
-                view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
-            ])
         }
+        // Safe area, not raw bounds: the window uses a full-size content view,
+        // so the tab strip would otherwise sit under the toolbar.
+        let guide = container.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            tabBar.topAnchor.constraint(equalTo: guide.topAnchor),
+            tabBar.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            tabBar.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+            content.topAnchor.constraint(equalTo: tabBar.bottomAnchor),
+            content.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
+            content.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            content.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+        ])
         return container
     }
 
@@ -118,12 +162,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private static let attentionItemIdentifier = NSToolbarItem.Identifier("attention")
     private static let connectItemIdentifier = NSToolbarItem.Identifier("connect")
+    private static let splitItemIdentifier = NSToolbarItem.Identifier("split")
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .toggleSidebar,
             .sidebarTrackingSeparator,
             .flexibleSpace,
+            Self.splitItemIdentifier,
             Self.attentionItemIdentifier,
             Self.connectItemIdentifier,
         ]
@@ -145,6 +191,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 splitView: splitController.splitView,
                 dividerIndex: 0
             )
+        case Self.splitItemIdentifier:
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "Split"
+            item.toolTip = "Split the active pane to the right (⌘D)"
+            item.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: nil)
+            item.target = self
+            item.action = #selector(splitRight)
+            return item
         case Self.attentionItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: identifier)
             item.label = "Attention"
@@ -156,8 +210,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return item
         case Self.connectItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: identifier)
-            item.label = "Connect"
-            item.toolTip = "Connect to a Herdr host (⌘K)"
+            item.label = "Add Host"
+            item.toolTip = "Attach another Herdr host (⌘K)"
             item.image = NSImage(systemSymbolName: "network", accessibilityDescription: nil)
             item.target = self
             item.action = #selector(showConnectSheet)
@@ -169,26 +223,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Keyboard
 
-    /// ⌘1…⌘9 selects a workspace by the number Herdr shows for it. Menu items
-    /// cannot express this (the set changes with every snapshot), so it is a
-    /// monitor — scoped to this window, and torn down with it, so a closed
-    /// window can never swallow another window's keystrokes.
-    private func installWorkspaceKeyMonitor() {
-        workspaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+    /// ⌘1…⌘9 picks a tab in the selected space, ⌃⌘1…⌃⌘9 picks a space by the
+    /// number Herdr shows for it. Menu items cannot express either (both sets
+    /// change with every snapshot), so it is a monitor — scoped to this window,
+    /// and torn down with it, so a closed window can never swallow another
+    /// window's keystrokes.
+    private func installNumberKeyMonitor() {
+        numberKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
             // `.numericPad` rides along on the keypad digits, and caps lock is
             // never part of the shortcut; anything else means this is not ⌘n.
             let modifiers = event.modifierFlags
                 .intersection(.deviceIndependentFlagsMask)
                 .subtracting([.numericPad, .capsLock])
-            guard modifiers == .command else { return event }
+            guard modifiers == .command || modifiers == [.command, .control] else { return event }
             guard
                 let characters = event.charactersIgnoringModifiers,
                 let number = UInt(characters), (1...9).contains(number),
-                let workspace = self.session.snapshot?.workspaces.first(where: { $0.number == number })
-                    ?? self.session.snapshot?.workspaces.dropFirst(Int(number) - 1).first
+                let session = self.connections.selectedSession
             else { return event }
-            self.select(focusTerminal: true) { $0.selectWorkspace(workspace.workspaceId) }
+
+            if modifiers == .command {
+                let tabs = session.tabsInSelectedSpace
+                guard let tab = tabs.first(where: { $0.number == number })
+                    ?? tabs.dropFirst(Int(number) - 1).first
+                else { return event }
+                self.select(focusTerminal: true) { $0.selectTab(tab.tabId) }
+            } else {
+                let spaces = session.spaces
+                guard let space = spaces.first(where: { $0.number == number })
+                    ?? spaces.dropFirst(Int(number) - 1).first
+                else { return event }
+                self.select(focusTerminal: true) { $0.selectSpace(space.workspaceId) }
+            }
             return nil
         }
     }
@@ -196,9 +263,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Every user-initiated selection goes through here, so picking a pane also
     /// clears a previous detach and (for pointer picks) hands over the keyboard.
     private func select(focusTerminal: Bool, _ body: (SessionController) -> Void) {
-        terminal.allowReattach()
+        guard let session = connections.selectedSession else { return }
+        content.allowReattach()
         body(session)
-        if focusTerminal { terminal.focusTerminal() }
+        if focusTerminal { content.focusActivePane() }
     }
 
     // MARK: - Actions
@@ -207,37 +275,130 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard let window, window.attachedSheet == nil else { return }
         let sheet = ConnectSheetController()
         sheet.onConnect = { [weak self] target, completion in
-            self?.session.connect(target, completion: completion)
+            self?.connections.connect(target, completion: completion)
         }
         connectSheet = sheet
         guard let sheetWindow = sheet.window else { return }
         window.beginSheet(sheetWindow) { [weak self] _ in
             self?.connectSheet = nil
-            self?.terminal.focusTerminal()
+            self?.content.focusActivePane()
         }
     }
 
     @objc func jumpToAttention() {
-        terminal.allowReattach()
-        guard session.jumpToAttention() != nil else { NSSound.beep(); return }
-        terminal.focusTerminal()
+        // Attention can be on a host the window is not showing; go there first.
+        if connections.selectedSession?.hasAttention != true,
+           let other = connections.firstConnectionNeedingAttention {
+            connections.select(other.id)
+        }
+        content.allowReattach()
+        guard connections.selectedSession?.jumpToAttention() != nil else { NSSound.beep(); return }
+        content.focusActivePane()
     }
 
     @objc func disconnect() {
-        session.disconnect()
-        refresh()
+        guard let id = connections.selectedConnectionId else { return }
+        connections.disconnect(id)
     }
 
     @objc func reconnect() {
-        session.reconnect()
+        guard let id = connections.selectedConnectionId else { return }
+        connections.reconnect(id)
+    }
+
+    @objc func newTab(_ sender: Any?) {
+        connections.selectedSession?.newTab()
+    }
+
+    @objc func closeTab(_ sender: Any?) {
+        guard let tabId = connections.selectedSession?.selectedTabId else { return }
+        confirmCloseTab(tabId)
+    }
+
+    @objc func newSpace(_ sender: Any?) {
+        connections.selectedSession?.newSpace()
+    }
+
+    @objc func splitRight() {
+        connections.selectedSession?.splitSelectedPane(.right)
+    }
+
+    @objc func splitDown() {
+        connections.selectedSession?.splitSelectedPane(.down)
+    }
+
+    @objc func focusPaneLeft() { connections.selectedSession?.focusNeighbour(.left) }
+    @objc func focusPaneRight() { connections.selectedSession?.focusNeighbour(.right) }
+    @objc func focusPaneUp() { connections.selectedSession?.focusNeighbour(.up) }
+    @objc func focusPaneDown() { connections.selectedSession?.focusNeighbour(.down) }
+
+    @objc func selectNextTab() { step(tabsBy: 1) }
+    @objc func selectPreviousTab() { step(tabsBy: -1) }
+
+    private func step(tabsBy offset: Int) {
+        guard let session = connections.selectedSession else { return }
+        let tabs = session.tabsInSelectedSpace
+        guard !tabs.isEmpty, let current = tabs.firstIndex(where: { $0.tabId == session.selectedTabId })
+        else { return }
+        let next = tabs[(current + offset + tabs.count) % tabs.count]
+        select(focusTerminal: true) { $0.selectTab(next.tabId) }
+    }
+
+    /// Closing a tab destroys its panes on the server, so ask first when there
+    /// is more than a bare shell in it.
+    private func confirmCloseTab(_ tabId: String) {
+        guard let session = connections.selectedSession, let window else { return }
+        let panes = session.panes(inTab: tabId)
+        let needsAsking = panes.count > 1 || panes.contains { $0.agentStatus != .unknown }
+        guard needsAsking else {
+            session.closeTab(tabId)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close this tab?"
+        alert.informativeText = panes.count == 1
+            ? "Its pane will be closed on \(session.target?.displayName ?? "the host")."
+            : "Its \(panes.count) panes will be closed on \(session.target?.displayName ?? "the host")."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close Tab")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            session.closeTab(tabId)
+        }
+    }
+
+    private func confirmForget(_ connectionId: String) {
+        guard let connection = connections.connection(id: connectionId), let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Remove \(connection.target.displayName)?"
+        alert.informativeText = "This detaches the host and forgets it. Nothing on the server is closed."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.connections.forget(connectionId)
+        }
     }
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let session = connections.selectedSession
         switch menuItem.action {
         case #selector(jumpToAttention):
-            return session.hasAttention
+            return connections.hasAttention
         case #selector(disconnect), #selector(reconnect):
-            return session.target != nil
+            return connections.selectedConnectionId != nil
+        case #selector(newTab(_:)), #selector(newSpace(_:)):
+            return session?.state.isConnected == true
+        case #selector(closeTab(_:)):
+            return session?.selectedTabId != nil
+        case #selector(splitRight), #selector(splitDown),
+             #selector(focusPaneLeft), #selector(focusPaneRight),
+             #selector(focusPaneUp), #selector(focusPaneDown):
+            return session?.selectedPaneId != nil
+        case #selector(selectNextTab), #selector(selectPreviousTab):
+            return (session?.tabsInSelectedSpace.count ?? 0) > 1
         default:
             return true
         }
@@ -246,27 +407,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: - NSWindowDelegate
 
     func windowWillClose(_ notification: Notification) {
-        if let workspaceKeyMonitor {
-            NSEvent.removeMonitor(workspaceKeyMonitor)
-            self.workspaceKeyMonitor = nil
+        if let numberKeyMonitor {
+            NSEvent.removeMonitor(numberKeyMonitor)
+            self.numberKeyMonitor = nil
         }
-        // Tear the SSH master, event thread and bridge down now rather than
+        // Tear the SSH masters, event threads and bridges down now rather than
         // waiting for ControlPersist to expire.
-        terminal.teardown()
-        session.disconnect()
+        content.teardown()
+        connections.disconnectAll()
         onClose?(self)
     }
 
-    // MARK: - SessionControllerDelegate
+    // MARK: - ConnectionsControllerDelegate
 
-    func sessionDidUpdate(_ session: SessionController) {
+    func connectionsDidChange(_ controller: ConnectionsController) {
         refresh()
     }
 
-    func sessionDidFail(_ session: SessionController, error: Error) {
+    func connections(
+        _ controller: ConnectionsController,
+        didFail error: Error,
+        on connection: ConnectionsController.Connection
+    ) {
         guard let window else { return }
         let alert = NSAlert()
-        alert.messageText = "Could not connect"
+        alert.messageText = "Could not connect to \(connection.target.displayName)"
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .warning
         alert.addButton(withTitle: "OK")
@@ -280,35 +445,58 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func refresh() {
         guard let window else { return }
-        let pane = session.selectedPane
+        let session = connections.selectedSession
+        let pane = session?.selectedPane
 
-        window.title = pane?.displayName ?? "herdr-term"
-        window.subtitle = subtitle(for: pane)
-        attentionItem?.isEnabled = session.hasAttention
+        window.title = pane?.displayName ?? session?.selectedSpace?.label ?? "herdr-term"
+        window.subtitle = subtitle(session: session, pane: pane)
+        attentionItem?.isEnabled = connections.hasAttention
         attentionItem?.image = NSImage(
-            systemSymbolName: session.hasAttention ? "bell.badge.fill" : "bell",
+            systemSymbolName: connections.hasAttention ? "bell.badge.fill" : "bell",
             accessibilityDescription: nil
         )
 
         sidebar.apply(buildSidebarModel())
-
-        if let pane, let socketPath = session.socketPath {
-            terminal.attach(
-                paneId: pane.paneId,
-                socketPath: socketPath,
-                herdrBinary: session.herdrBinary,
-                executablePath: Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
-            )
-            ring.update(active: session.isUnread(paneId: pane.paneId), status: pane.agentStatus)
-        } else {
-            ring.update(active: false, status: .idle)
-            let (title, detail, symbol) = emptyState()
-            terminal.showPlaceholder(title: title, detail: detail, symbol: symbol)
-        }
+        tabBar.apply(buildTabBarModel(session))
+        applyContent(session)
     }
 
-    private func subtitle(for pane: PaneInfo?) -> String {
+    private func applyContent(_ session: SessionController?) {
+        guard
+            let session,
+            let socketPath = session.socketPath,
+            let tabId = session.selectedTabId,
+            !session.panes(inTab: tabId).isEmpty
+        else {
+            let (title, detail, symbol) = emptyState(session)
+            content.showPlaceholder(title: title, detail: detail, symbol: symbol)
+            return
+        }
+        // Before the tree lands, one pane is still better than an empty window:
+        // fall back to the active pane on its own.
+        let tree = session.layout?.root
+            ?? session.selectedPaneId.map { LayoutNode.pane(paneId: $0, label: nil, cwd: nil) }
+        content.apply(
+            SplitContainerView.Model(
+                tree: tree,
+                panes: session.visiblePanes,
+                activePaneId: session.selectedPaneId,
+                unreadPaneIds: session.unreadPaneIds,
+                attachment: PaneAttachment(
+                    socketPath: socketPath,
+                    herdrBinary: session.herdrBinary,
+                    executablePath: Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
+                )
+            )
+        )
+    }
+
+    private func subtitle(session: SessionController?, pane: PaneInfo?) -> String {
+        guard let session else {
+            return connections.connections.isEmpty ? "Not connected" : "Pick a host"
+        }
         var parts = [session.state.summary]
+        if let space = session.selectedSpace { parts.append(space.label) }
         if let pane {
             parts.append(StatusStyle.label(pane.agentStatus))
             if let cwd = pane.foregroundCwd ?? pane.cwd, !cwd.isEmpty {
@@ -318,130 +506,137 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return parts.joined(separator: "  ·  ")
     }
 
-    private func emptyState() -> (String, String, String) {
+    private func emptyState(_ session: SessionController?) -> (String, String, String) {
+        guard let session else {
+            return connections.connections.isEmpty
+                ? ("No hosts", "Press ⌘K to attach to a Herdr host.", "network")
+                : ("No host selected", "Pick a host in the sidebar to attach it.", "network")
+        }
         switch session.state {
         case .disconnected:
-            return ("Not connected", "Press ⌘K to attach to a Herdr host.", "network")
+            return ("Not attached", "Pick this host in the sidebar to attach it, or press ⌘K.", "network")
         case .connecting(let target), .reconnecting(let target):
             return ("Connecting", "Talking to \(target)…", "arrow.triangle.2.circlepath")
         case .failed(let message):
             return ("Connection failed", message, "exclamationmark.triangle")
         case .connected(let target):
-            return ("No panes", "\(target) has no panes yet. Start one with `herdr` on the host.", "rectangle.dashed")
+            if session.spaces.isEmpty {
+                return ("No spaces", "\(target) has no workspaces yet. Start one with `herdr` on the host.", "rectangle.dashed")
+            }
+            if session.selectedTabId == nil {
+                return ("No tabs", "This space has no tabs. Press ⌘T to open one.", "rectangle.dashed")
+            }
+            return ("No panes", "This tab has no panes.", "rectangle.dashed")
         }
+    }
+
+    // MARK: - Sidebar model
+
+    /// Sidebar row ids. A space id is only unique within its host, so the host's
+    /// id is part of the row's.
+    private static func spaceRowId(_ connectionId: String, _ workspaceId: String) -> String {
+        "\(connectionId)/\(workspaceId)"
+    }
+
+    private static func spaceRow(_ rowId: String) -> (connectionId: String, workspaceId: String)? {
+        guard let slash = rowId.firstIndex(of: "/") else { return nil }
+        return (String(rowId[rowId.startIndex..<slash]), String(rowId[rowId.index(after: slash)...]))
     }
 
     private func buildSidebarModel() -> SidebarModel {
         var model = SidebarModel()
-        guard let snapshot = session.snapshot else {
-            model.emptyMessage = session.state.summary
-            return model
-        }
-
-        let tabNumbers = Dictionary(snapshot.tabs.map { ($0.tabId, $0.number) }, uniquingKeysWith: { first, _ in first })
-        let tabsPerWorkspace = Dictionary(grouping: snapshot.tabs, by: \.workspaceId).mapValues(\.count)
-
-        for workspace in snapshot.workspaces {
-            let panes = session.panes(in: workspace.workspaceId)
-            let unreadCount = panes.filter { session.isUnread(paneId: $0.paneId) }.count
-            model.workspaces.append(
+        for connection in connections.connections {
+            let session = connection.session
+            let unread = session.unreadPaneIds.count
+            model.hosts.append(
                 SidebarModel.Row(
-                    id: workspace.workspaceId,
-                    title: "\(workspace.number)  \(workspace.label)",
-                    subtitle: workspaceSubtitle(workspace, paneCount: panes.count),
-                    status: session.effectiveStatus(of: workspace),
-                    unread: unreadCount > 0,
-                    badge: unreadCount
+                    id: connection.id,
+                    kind: .host,
+                    title: connection.target.displayName,
+                    subtitle: hostSubtitle(connection),
+                    status: session.effectiveStatus,
+                    unread: unread > 0,
+                    badge: unread,
+                    offline: session.state == .disconnected,
+                    busy: session.state.isBusy,
+                    symbol: connection.target.isLocal ? "desktopcomputer" : "server.rack"
                 )
             )
-            let showTabNumbers = (tabsPerWorkspace[workspace.workspaceId] ?? 0) > 1
-            model.panes[workspace.workspaceId] = panes.map { pane in
-                SidebarModel.Row(
-                    id: pane.paneId,
-                    title: pane.displayName,
-                    subtitle: paneSubtitle(
-                        pane,
-                        tabNumber: showTabNumbers ? tabNumbers[pane.tabId] : nil
-                    ),
-                    status: pane.agentStatus,
-                    unread: session.isUnread(paneId: pane.paneId)
+            model.spaces[connection.id] = session.spaces.map { space in
+                let count = session.unreadCount(inSpace: space.workspaceId)
+                return SidebarModel.Row(
+                    id: Self.spaceRowId(connection.id, space.workspaceId),
+                    kind: .space,
+                    title: "\(space.number)  \(space.label)",
+                    subtitle: spaceSubtitle(space, session: session),
+                    status: session.effectiveStatus(ofSpace: space),
+                    unread: count > 0,
+                    badge: count
                 )
             }
         }
 
-        model.selectedId = session.selectedPaneId
-        if model.workspaces.isEmpty {
-            model.emptyMessage = "No workspaces on this host yet."
+        if let connection = connections.selected {
+            model.selectedId = connection.session.selectedWorkspaceId
+                .map { Self.spaceRowId(connection.id, $0) } ?? connection.id
+        }
+        if model.hosts.isEmpty {
+            model.emptyMessage = "No hosts yet. Add one to see its spaces here."
         }
         return model
     }
 
-    private func workspaceSubtitle(_ workspace: WorkspaceInfo, paneCount: Int) -> String {
-        if let cwd = workspace.tokens?["cwd"], !cwd.isEmpty {
+    private func hostSubtitle(_ connection: ConnectionsController.Connection) -> String {
+        let session = connection.session
+        switch session.state {
+        case .connected:
+            let spaces = session.spaces.count
+            return spaces == 1 ? "1 space" : "\(spaces) spaces"
+        default:
+            return session.state.summary
+        }
+    }
+
+    private func spaceSubtitle(_ space: WorkspaceInfo, session: SessionController) -> String {
+        if let cwd = space.tokens?["cwd"], !cwd.isEmpty {
             return cwd.abbreviatingHome
         }
-        return paneCount == 1 ? "1 pane" : "\(paneCount) panes"
+        let tabs = Int(space.tabCount)
+        let panes = session.panes(inSpace: space.workspaceId).count
+        let tabPart = tabs == 1 ? "1 tab" : "\(tabs) tabs"
+        let panePart = panes == 1 ? "1 pane" : "\(panes) panes"
+        return "\(tabPart)  ·  \(panePart)"
     }
 
-    private func paneSubtitle(_ pane: PaneInfo, tabNumber: UInt?) -> String {
-        var parts: [String] = []
-        if let tabNumber { parts.append("tab \(tabNumber)") }
-        // Shell panes are titled `user@host:~/path`, so the cwd underneath would
-        // just repeat the title; say something useful instead.
-        let cwd = (pane.foregroundCwd ?? pane.cwd).map(\.abbreviatingHome) ?? ""
-        if !cwd.isEmpty, !pane.displayName.hasSuffix(cwd) {
-            parts.append(cwd)
-        } else {
-            parts.append(StatusStyle.label(pane.agentStatus))
+    // MARK: - Tab bar model
+
+    private func buildTabBarModel(_ session: SessionController?) -> TabBarModel {
+        guard let session, session.state.isConnected else { return TabBarModel() }
+        var model = TabBarModel()
+        model.canCreate = session.selectedWorkspaceId != nil
+        model.items = session.tabsInSelectedSpace.map { tab in
+            let panes = session.panes(inTab: tab.tabId)
+            return TabBarModel.Item(
+                id: tab.tabId,
+                number: tab.number,
+                title: tabTitle(tab, panes: panes),
+                status: session.effectiveStatus(ofTab: tab),
+                unread: session.unreadCount(inTab: tab.tabId) > 0,
+                paneCount: panes.count,
+                selected: tab.tabId == session.selectedTabId
+            )
         }
-        return parts.joined(separator: "  ·  ")
-    }
-}
-
-/// Border drawn over the focused pane while it wants attention. Pulses when an
-/// agent is blocked, holds steady for an unseen `done`.
-private final class AttentionRingView: NSView {
-    private var status: AgentStatus = .idle
-    private var isActive = false
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.cornerCurve = .continuous
-        layer?.cornerRadius = 6
+        return model
     }
 
-    required init?(coder: NSCoder) { nil }
-
-    /// Purely decorative: never take clicks away from the terminal underneath.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override var wantsUpdateLayer: Bool { true }
-
-    override func updateLayer() {
-        layer?.borderWidth = isActive ? 2 : 0
-        layer?.borderColor = StatusStyle.attentionColor(status).cgColor
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        needsDisplay = true
-    }
-
-    func update(active: Bool, status: AgentStatus) {
-        guard active != isActive || status != self.status else { return }
-        isActive = active
-        self.status = status
-        needsDisplay = true
-
-        layer?.removeAnimation(forKey: "pulse")
-        guard active, status == .blocked else { return }
-        let pulse = CABasicAnimation(keyPath: "opacity")
-        pulse.fromValue = 1.0
-        pulse.toValue = 0.35
-        pulse.duration = 0.85
-        pulse.autoreverses = true
-        pulse.repeatCount = .infinity
-        layer?.add(pulse, forKey: "pulse")
+    /// Herdr labels an unnamed tab with its own number, which says nothing next
+    /// to the number already on the row; name it after what is running instead.
+    private func tabTitle(_ tab: TabInfo, panes: [PaneInfo]) -> String {
+        if tab.label != "\(tab.number)", !tab.label.isEmpty {
+            return "\(tab.number)  \(tab.label)"
+        }
+        let pane = panes.first { $0.focused } ?? panes.first
+        guard let pane else { return "\(tab.number)" }
+        return "\(tab.number)  \(pane.displayName)"
     }
 }

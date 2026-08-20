@@ -9,6 +9,10 @@ protocol SessionControllerDelegate: AnyObject {
     func sessionDidFail(_ session: SessionController, error: Error)
 }
 
+/// One connection to one Herdr server, and the selection inside it: which space
+/// (Herdr workspace), which tab, and which pane of that tab has the keyboard.
+///
+/// A window can hold several of these; `ConnectionsController` owns them.
 @MainActor
 final class SessionController {
     enum State: Equatable {
@@ -32,16 +36,41 @@ final class SessionController {
             if case .connected = self { return true }
             return false
         }
+
+        var isBusy: Bool {
+            switch self {
+            case .connecting, .reconnecting: return true
+            default: return false
+            }
+        }
     }
 
     weak var delegate: SessionControllerDelegate?
 
     private(set) var target: ConnectTarget?
     private(set) var snapshot: SessionSnapshot?
+    private(set) var selectedWorkspaceId: String?
+    private(set) var selectedTabId: String?
     private(set) var selectedPaneId: String?
     private(set) var state: State = .disconnected
     private(set) var unreadPaneIds: Set<String> = []
     private(set) var socketPath: String?
+    /// Split tree of the selected tab. Only one tab is on screen at a time, so
+    /// only one tree is ever fetched.
+    private(set) var layout: LayoutTree?
+
+    /// Whether this connection is the one the window is showing. A pane the user
+    /// can actually see is a pane that has been read.
+    var isVisible = false {
+        didSet {
+            guard isVisible != oldValue else { return }
+            guard isVisible else { return }
+            markVisiblePanesRead()
+            // The tree is only fetched for the host on screen, so becoming the
+            // visible one is when this host needs its own.
+            refreshLayoutIfNeeded()
+        }
+    }
 
     private var attentionOrder: [String] = []
     private var connection: RemoteConnection?
@@ -56,6 +85,10 @@ final class SessionController {
     private var retryTimer: Timer?
     private var lastReconnect: Date = .distantPast
     private var connectGeneration = 0
+    /// Which layout the cached tree belongs to, so it is re-fetched when the
+    /// snapshot says the tab's splits or ratios moved and not on every poll.
+    private var layoutKey: String?
+    private var layoutFetchKey: String?
     /// Held here rather than captured by the worker closure: a UI callback is
     /// not `Sendable` and must not cross to a background queue.
     private var pendingConnect: ((Error?) -> Void)?
@@ -124,8 +157,13 @@ final class SessionController {
         connection?.close()
         connection = nil
         snapshot = nil
+        selectedWorkspaceId = nil
+        selectedTabId = nil
         selectedPaneId = nil
         socketPath = nil
+        layout = nil
+        layoutKey = nil
+        layoutFetchKey = nil
         unreadPaneIds = []
         attentionOrder = []
         state = .disconnected
@@ -159,22 +197,65 @@ final class SessionController {
 
     // MARK: - Selection
 
-    func selectWorkspace(_ workspaceId: String) {
+    /// Pick a space. Prefers a tab that wants attention over the one Herdr has
+    /// focused, so ⌘-jumping into a space lands on the thing that is asking.
+    func selectSpace(_ workspaceId: String) {
         guard let snapshot else { return }
-        let candidates = snapshot.panes.filter { $0.workspaceId == workspaceId }
-        // Prefer something that wants attention, then the server's focus.
-        let pane = candidates.first { unreadPaneIds.contains($0.paneId) }
-            ?? candidates.first { $0.focused }
-            ?? candidates.first
-        if let pane { selectPane(pane.paneId) }
+        selectedWorkspaceId = workspaceId
+        let tabs = snapshot.tabs(in: workspaceId)
+        let tab = tabs.first { tabWantsAttention($0.tabId) }
+            ?? tabs.first { $0.tabId == snapshot.workspace(workspaceId)?.activeTabId }
+            ?? tabs.first { $0.focused }
+            ?? tabs.first
+        if let tab {
+            selectTab(tab.tabId)
+        } else {
+            selectedTabId = nil
+            selectedPaneId = nil
+            layout = nil
+            focusRemoteWorkspace(workspaceId)
+            delegate?.sessionDidUpdate(self)
+        }
     }
 
-    func selectPane(_ paneId: String) {
-        selectedPaneId = paneId
-        markRead(paneId)
-        DispatchQueue.global(qos: .userInitiated).async { [rpc] in
-            try? rpc?.focusPane(paneId)
+    func selectTab(_ tabId: String) {
+        guard let snapshot, let tab = snapshot.tab(tabId) else { return }
+        selectedWorkspaceId = tab.workspaceId
+        if selectedTabId != tabId {
+            selectedTabId = tabId
+            // A tree belonging to the tab we just left must not be drawn for
+            // the new one, not even for the frame before the fetch lands.
+            layout = nil
+            layoutKey = nil
         }
+        let panes = snapshot.panes(in: tabId)
+        let pane = panes.first { unreadPaneIds.contains($0.paneId) }
+            ?? panes.first { $0.focused }
+            ?? panes.first
+        if let pane {
+            selectPane(pane.paneId)
+        } else {
+            selectedPaneId = nil
+            focusRemoteTab(tabId)
+            refreshLayoutIfNeeded()
+            delegate?.sessionDidUpdate(self)
+        }
+    }
+
+    /// Pick a pane. Also settles which tab and space are selected, so clicking
+    /// a pane inside a split never leaves the sidebar pointing somewhere else.
+    func selectPane(_ paneId: String) {
+        guard let pane = snapshot?.pane(paneId) else { return }
+        if selectedTabId != pane.tabId {
+            selectedTabId = pane.tabId
+            layout = nil
+            layoutKey = nil
+        }
+        selectedWorkspaceId = pane.workspaceId
+        selectedPaneId = paneId
+        markVisiblePanesRead()
+        focusRemotePane(paneId)
+        refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
     }
 
@@ -186,32 +267,146 @@ final class SessionController {
         return paneId
     }
 
+    // MARK: - Actions on the server
+
+    func splitSelectedPane(_ direction: SplitDirection) {
+        guard let paneId = selectedPaneId, let rpc else { return }
+        perform { _ = try rpc.splitPane(paneId, direction: direction, focus: true) }
+    }
+
+    /// Herdr decides which pane lies in a direction — it owns the geometry.
+    func focusNeighbour(_ direction: PaneDirection) {
+        guard let paneId = selectedPaneId, let rpc else { return }
+        perform { try rpc.focusPane(from: paneId, direction: direction) }
+    }
+
+    func newTab() {
+        guard let workspaceId = selectedWorkspaceId, let rpc else { return }
+        perform { _ = try rpc.createTab(workspaceId: workspaceId, focus: true) }
+    }
+
+    func closeTab(_ tabId: String) {
+        guard let rpc else { return }
+        perform { try rpc.closeTab(tabId) }
+    }
+
+    func newSpace() {
+        guard let rpc else { return }
+        perform { _ = try rpc.createWorkspace() }
+    }
+
+    /// A divider the user dragged. Pushed to the server rather than kept locally
+    /// so the TUI and any other client see the same layout.
+    func setSplitRatio(path: [Bool], ratio: Double) {
+        guard let tabId = selectedTabId, let rpc else { return }
+        perform { try rpc.setSplitRatio(tabId: tabId, path: path, ratio: ratio) }
+    }
+
+    /// Fire-and-forget request off the main thread, followed by a snapshot so
+    /// the UI reflects it without waiting for the next poll.
+    private func perform(_ body: @escaping @Sendable () throws -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            try? body()
+            DispatchQueue.main.async { self?.refreshSnapshot() }
+        }
+    }
+
+    private func focusRemotePane(_ paneId: String) {
+        guard let rpc else { return }
+        DispatchQueue.global(qos: .userInitiated).async { try? rpc.focusPane(paneId) }
+    }
+
+    private func focusRemoteTab(_ tabId: String) {
+        guard let rpc else { return }
+        DispatchQueue.global(qos: .userInitiated).async { try? rpc.focusTab(tabId) }
+    }
+
+    private func focusRemoteWorkspace(_ workspaceId: String) {
+        guard let rpc else { return }
+        DispatchQueue.global(qos: .userInitiated).async { try? rpc.focusWorkspace(workspaceId) }
+    }
+
     // MARK: - Derived state
 
-    func panes(in workspaceId: String) -> [PaneInfo] {
-        snapshot?.panes.filter { $0.workspaceId == workspaceId } ?? []
+    var spaces: [WorkspaceInfo] { snapshot?.workspaces ?? [] }
+
+    var selectedSpace: WorkspaceInfo? {
+        guard let selectedWorkspaceId else { return nil }
+        return snapshot?.workspace(selectedWorkspaceId)
+    }
+
+    var tabsInSelectedSpace: [TabInfo] {
+        guard let selectedWorkspaceId, let snapshot else { return [] }
+        return snapshot.tabs(in: selectedWorkspaceId)
     }
 
     var selectedPane: PaneInfo? {
         guard let selectedPaneId else { return nil }
-        return snapshot?.panes.first { $0.paneId == selectedPaneId }
+        return snapshot?.pane(selectedPaneId)
     }
 
-    /// Workspace rows surface the loudest child state, so a blocked pane stays
-    /// visible even while its workspace is collapsed.
-    func effectiveStatus(of workspace: WorkspaceInfo) -> AgentStatus {
-        let panes = panes(in: workspace.workspaceId)
+    func panes(inTab tabId: String) -> [PaneInfo] {
+        snapshot?.panes(in: tabId) ?? []
+    }
+
+    func panes(inSpace workspaceId: String) -> [PaneInfo] {
+        snapshot?.panes.filter { $0.workspaceId == workspaceId } ?? []
+    }
+
+    /// Panes of the selected tab in the order the split tree lays them out,
+    /// falling back to the snapshot before the tree has arrived.
+    var visiblePanes: [PaneInfo] {
+        guard let selectedTabId else { return [] }
+        let panes = self.panes(inTab: selectedTabId)
+        guard let layout else { return panes }
+        let byId = Dictionary(panes.map { ($0.paneId, $0) }, uniquingKeysWith: { first, _ in first })
+        return layout.paneIds.compactMap { byId[$0] }
+    }
+
+    /// Space rows surface the loudest child state, so a blocked pane stays
+    /// visible even while its space is collapsed.
+    func effectiveStatus(ofSpace workspace: WorkspaceInfo) -> AgentStatus {
+        let panes = panes(inSpace: workspace.workspaceId)
+        if let loudest = loudestStatus(of: panes) { return loudest }
+        if workspace.agentStatus != .unknown { return workspace.agentStatus }
+        return .unknown
+    }
+
+    func effectiveStatus(ofTab tab: TabInfo) -> AgentStatus {
+        let panes = panes(inTab: tab.tabId)
+        if let loudest = loudestStatus(of: panes) { return loudest }
+        return tab.agentStatus
+    }
+
+    /// The whole connection in one dot, for the host row.
+    var effectiveStatus: AgentStatus {
+        guard let snapshot else { return .unknown }
+        return loudestStatus(of: snapshot.panes) ?? .unknown
+    }
+
+    private func loudestStatus(of panes: [PaneInfo]) -> AgentStatus? {
         if panes.contains(where: { $0.agentStatus == .blocked }) { return .blocked }
         if panes.contains(where: { $0.agentStatus == .done && unreadPaneIds.contains($0.paneId) }) { return .done }
-        if workspace.agentStatus != .unknown { return workspace.agentStatus }
         if panes.contains(where: { $0.agentStatus == .working }) { return .working }
-        return workspace.agentStatus
+        return nil
     }
 
     func isUnread(paneId: String) -> Bool { unreadPaneIds.contains(paneId) }
 
-    func isUnread(workspaceId: String) -> Bool {
-        panes(in: workspaceId).contains { unreadPaneIds.contains($0.paneId) }
+    func isUnread(spaceId: String) -> Bool {
+        panes(inSpace: spaceId).contains { unreadPaneIds.contains($0.paneId) }
+    }
+
+    func unreadCount(inSpace spaceId: String) -> Int {
+        panes(inSpace: spaceId).filter { unreadPaneIds.contains($0.paneId) }.count
+    }
+
+    func unreadCount(inTab tabId: String) -> Int {
+        panes(inTab: tabId).filter { unreadPaneIds.contains($0.paneId) }.count
+    }
+
+    private func tabWantsAttention(_ tabId: String) -> Bool {
+        unreadCount(inTab: tabId) > 0
     }
 
     // MARK: - Internals
@@ -275,13 +470,10 @@ final class SessionController {
         )
         self.snapshot = snapshot
 
-        let liveIds = Set(snapshot.panes.map(\.paneId))
-        if selectedPaneId == nil || !liveIds.contains(selectedPaneId!) {
-            selectedPaneId = snapshot.focusedPaneId ?? snapshot.panes.first?.paneId
-        }
+        settleSelection(snapshot)
 
         for pane in snapshot.panes {
-            guard pane.agentStatus.needsAttention, pane.paneId != selectedPaneId else {
+            guard pane.agentStatus.needsAttention, !isOnScreen(pane) else {
                 markRead(pane.paneId)
                 continue
             }
@@ -295,9 +487,84 @@ final class SessionController {
 
         // Panes can disappear while unread; keep both trackers to live ids only
         // or `jumpToAttention` starts selecting panes that no longer exist.
+        let liveIds = Set(snapshot.panes.map(\.paneId))
         unreadPaneIds.formIntersection(liveIds)
         attentionOrder.removeAll { !unreadPaneIds.contains($0) }
+
+        refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
+    }
+
+    /// Keep space / tab / pane pointing at things that still exist, following
+    /// the server's focus when this client has no opinion yet.
+    private func settleSelection(_ snapshot: SessionSnapshot) {
+        if let selectedWorkspaceId, snapshot.workspace(selectedWorkspaceId) == nil {
+            self.selectedWorkspaceId = nil
+            selectedTabId = nil
+            selectedPaneId = nil
+        }
+        if selectedWorkspaceId == nil {
+            selectedWorkspaceId = snapshot.focusedWorkspaceId ?? snapshot.workspaces.first?.workspaceId
+        }
+        guard let workspaceId = selectedWorkspaceId else { return }
+
+        let tabs = snapshot.tabs(in: workspaceId)
+        if let selectedTabId, !tabs.contains(where: { $0.tabId == selectedTabId }) {
+            self.selectedTabId = nil
+            selectedPaneId = nil
+        }
+        if selectedTabId == nil {
+            let focused = snapshot.focusedTabId.flatMap { id in tabs.first { $0.tabId == id } }
+            selectedTabId = (focused ?? tabs.first { $0.focused } ?? tabs.first)?.tabId
+            layout = nil
+            layoutKey = nil
+        }
+        guard let tabId = selectedTabId else { return }
+
+        let panes = snapshot.panes(in: tabId)
+        if let selectedPaneId, !panes.contains(where: { $0.paneId == selectedPaneId }) {
+            self.selectedPaneId = nil
+        }
+        if selectedPaneId == nil {
+            let focused = snapshot.focusedPaneId.flatMap { id in panes.first { $0.paneId == id } }
+            selectedPaneId = (focused ?? panes.first { $0.focused } ?? panes.first)?.paneId
+        }
+    }
+
+    /// A pane the user is looking at right now: in the selected tab of the
+    /// connection the window is showing. Splits mean this is several panes.
+    private func isOnScreen(_ pane: PaneInfo) -> Bool {
+        isVisible && pane.tabId == selectedTabId
+    }
+
+    private func markVisiblePanesRead() {
+        guard let selectedTabId else { return }
+        for pane in panes(inTab: selectedTabId) where isOnScreen(pane) {
+            markRead(pane.paneId)
+        }
+    }
+
+    /// Ask for the split tree only when the snapshot says this tab's layout is
+    /// not the one already drawn — the tree is a second round trip, and the poll
+    /// runs every two seconds.
+    private func refreshLayoutIfNeeded() {
+        guard isVisible, let rpc, let tabId = selectedTabId, let snapshot else { return }
+        let summary = snapshot.layout(forTab: tabId)
+        let key = "\(tabId)|\(summary?.signature ?? "none")"
+        guard key != layoutKey, key != layoutFetchKey else { return }
+        layoutFetchKey = key
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let tree = try? rpc.layout(tabId: tabId)
+            DispatchQueue.main.async {
+                guard let self, self.rpc === rpc, self.selectedTabId == tabId else { return }
+                self.layoutFetchKey = nil
+                guard let tree else { return }
+                self.layout = tree
+                self.layoutKey = key
+                self.delegate?.sessionDidUpdate(self)
+            }
+        }
     }
 
     private func markRead(_ paneId: String) {

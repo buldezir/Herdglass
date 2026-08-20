@@ -88,6 +88,126 @@ import Testing
     #expect(try pane("{\(base)}").displayName == "w1:p1")
 }
 
+// MARK: - Split layouts
+
+private let splitTreeJSON = """
+{
+  "workspace_id": "w4", "tab_id": "w4:t1", "zoomed": false, "focused_pane_id": "w4:p1",
+  "root": {
+    "type": "split", "direction": "right", "ratio": 0.3,
+    "first": {
+      "type": "split", "direction": "down", "ratio": 0.75,
+      "first": {"type": "pane", "pane_id": "w4:p1", "cwd": "/tmp"},
+      "second": {"type": "pane", "pane_id": "w4:p3"}
+    },
+    "second": {"type": "pane", "pane_id": "w4:p2"}
+  }
+}
+"""
+
+@Test func decodeSplitTreeInDisplayOrder() throws {
+    let tree = try JSONDecoder().decode(LayoutTree.self, from: Data(splitTreeJSON.utf8))
+    #expect(tree.tabId == "w4:t1")
+    #expect(tree.focusedPaneId == "w4:p1")
+    #expect(tree.paneIds == ["w4:p1", "w4:p3", "w4:p2"])
+    guard case .split(let direction, let ratio, _, _) = tree.root else {
+        Issue.record("root should be a split")
+        return
+    }
+    #expect(direction == .right)
+    #expect(abs(ratio - 0.3) < 0.0001)
+}
+
+@Test func splitRatioPathsAreFirstFalseSecondTrue() throws {
+    // `layout.set_split_ratio` addresses a divider by the descent that reaches
+    // it: false into `first`, true into `second`. A wrong path silently resizes
+    // the wrong divider, so this is the mapping the GUI drags depend on.
+    let tree = try JSONDecoder().decode(LayoutTree.self, from: Data(splitTreeJSON.utf8))
+    #expect(tree.root.path(toPane: "w4:p1") == [false, false])
+    #expect(tree.root.path(toPane: "w4:p3") == [false, true])
+    #expect(tree.root.path(toPane: "w4:p2") == [true])
+    #expect(tree.root.path(toPane: "w4:p9") == nil)
+}
+
+@Test func structureSignatureIgnoresRatiosOnly() throws {
+    // The view hierarchy is only rebuilt when this changes; a dragged divider
+    // must not tear down and respawn every bridge in the tab.
+    let tree = try JSONDecoder().decode(LayoutTree.self, from: Data(splitTreeJSON.utf8))
+    let moved = try JSONDecoder().decode(
+        LayoutTree.self,
+        from: Data(splitTreeJSON.replacingOccurrences(of: "0.3", with: "0.8").utf8)
+    )
+    #expect(tree.root.structureSignature == moved.root.structureSignature)
+
+    let restructured = try JSONDecoder().decode(
+        LayoutTree.self,
+        from: Data(splitTreeJSON.replacingOccurrences(of: "\"direction\": \"right\"", with: "\"direction\": \"down\"").utf8)
+    )
+    #expect(tree.root.structureSignature != restructured.root.structureSignature)
+}
+
+@Test func layoutNodeRejectsAnUnknownKind() {
+    #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(LayoutNode.self, from: Data(#"{"type":"tabgroup"}"#.utf8))
+    }
+}
+
+@Test func snapshotCarriesPerTabLayoutsAndSignsThem() throws {
+    let json = """
+    {
+      "version": "0.8.2", "protocol": 20,
+      "focused_pane_id": "w4:p1", "focused_tab_id": "w4:t1", "focused_workspace_id": "w4",
+      "workspaces": [{
+        "workspace_id": "w4", "number": 1, "label": "~", "focused": true,
+        "pane_count": 2, "tab_count": 1, "active_tab_id": "w4:t1", "agent_status": "idle"
+      }],
+      "tabs": [{
+        "tab_id": "w4:t1", "workspace_id": "w4", "number": 1, "label": "1",
+        "focused": true, "pane_count": 2, "agent_status": "idle"
+      }],
+      "panes": [
+        {"pane_id": "w4:p1", "terminal_id": "t1", "workspace_id": "w4", "tab_id": "w4:t1",
+         "focused": true, "agent_status": "idle", "revision": 1},
+        {"pane_id": "w4:p2", "terminal_id": "t2", "workspace_id": "w4", "tab_id": "w4:t1",
+         "focused": false, "agent_status": "working", "revision": 1}
+      ],
+      "agents": [],
+      "layouts": [{
+        "workspace_id": "w4", "tab_id": "w4:t1", "zoomed": false, "focused_pane_id": "w4:p1",
+        "area": {"x": 0, "y": 0, "width": 80, "height": 24},
+        "panes": [
+          {"pane_id": "w4:p1", "focused": true, "rect": {"x": 0, "y": 0, "width": 40, "height": 24}},
+          {"pane_id": "w4:p2", "focused": false, "rect": {"x": 41, "y": 0, "width": 39, "height": 24}}
+        ],
+        "splits": [{
+          "id": "split_0_root", "direction": "right", "ratio": 0.5,
+          "rect": {"x": 0, "y": 0, "width": 80, "height": 24}
+        }]
+      }]
+    }
+    """
+    let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+    #expect(snapshot.tabs(in: "w4").map(\.tabId) == ["w4:t1"])
+    #expect(snapshot.panes(in: "w4:t1").count == 2)
+    let layout = try #require(snapshot.layout(forTab: "w4:t1"))
+    #expect(layout.panes.count == 2)
+
+    // The signature is what decides whether the tree is re-fetched: a moved
+    // divider has to change it, a pane that only changed status must not.
+    var moved = layout
+    moved.splits[0].ratio = 0.8
+    #expect(moved.signature != layout.signature)
+    #expect(layout.signature == snapshot.layout(forTab: "w4:t1")?.signature)
+}
+
+@Test func snapshotToleratesAServerThatOmitsLayouts() throws {
+    // 0.8.2 sends `layouts`, but a snapshot without it is still a snapshot; the
+    // GUI falls back to a single pane rather than failing to decode.
+    let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(emptySnapshotJSON.utf8))
+    #expect(snapshot.layouts.isEmpty)
+    #expect(snapshot.panes.isEmpty)
+}
+
 @Test func agentStatusNeedsAttention() {
     #expect(AgentStatus.blocked.needsAttention)
     #expect(AgentStatus.done.needsAttention)
@@ -316,6 +436,48 @@ private let emptySnapshotJSON = """
     let path = FileManager.default.temporaryDirectory.appendingPathComponent("absent.sock").path
     #expect(throws: (any Error).self) {
         try HerdrRPC(socketPath: path).snapshot()
+    }
+}
+
+@Test func layoutExportUnwrapsTheServerEnvelope() throws {
+    let server = try OneShotJSONServer { request in
+        let id = request.split(separator: "\"").drop(while: { $0 != "id" }).dropFirst(2).first ?? "rpc-1"
+        // One line: the transport is NDJSON, so a pretty-printed payload would
+        // arrive as several records and the last of them after a hang-up.
+        let layout = splitTreeJSON.split(separator: "\n").joined()
+        return #"{"id":"\#(id)","result":{"type":"layout_export","layout":\#(layout)}}"#
+    }
+    defer { server.stop() }
+
+    let tree = try HerdrRPC(socketPath: server.path).layout(tabId: "w4:t1")
+    #expect(tree.paneIds == ["w4:p1", "w4:p3", "w4:p2"])
+}
+
+@Test func creatingATabReadsTheTabCreatedResult() throws {
+    // `tab.create` answers `tab_created`, not `tab_info`; expecting the wrong
+    // one turns a working call into "Unexpected payload".
+    let server = try OneShotJSONServer { request in
+        let id = request.split(separator: "\"").drop(while: { $0 != "id" }).dropFirst(2).first ?? "rpc-1"
+        let tab = #"{"tab_id":"w4:t2","workspace_id":"w4","number":2,"label":"2","#
+            + #""focused":true,"pane_count":1,"agent_status":"unknown"}"#
+        return #"{"id":"\#(id)","result":{"type":"tab_created","tab":\#(tab)}}"#
+    }
+    defer { server.stop() }
+
+    let tab = try HerdrRPC(socketPath: server.path).createTab(workspaceId: "w4")
+    #expect(tab.tabId == "w4:t2")
+    #expect(tab.number == 2)
+}
+
+@Test func aWrongResultTypeIsReportedRatherThanDecoded() throws {
+    let server = try OneShotJSONServer { request in
+        let id = request.split(separator: "\"").drop(while: { $0 != "id" }).dropFirst(2).first ?? "rpc-1"
+        return #"{"id":"\#(id)","result":{"type":"ok"}}"#
+    }
+    defer { server.stop() }
+
+    #expect(throws: HerdrRPCError.self) {
+        try HerdrRPC(socketPath: server.path).layout(tabId: "w4:t1")
     }
 }
 

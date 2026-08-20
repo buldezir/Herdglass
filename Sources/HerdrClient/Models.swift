@@ -22,6 +22,9 @@ public struct SessionSnapshot: Codable, Sendable {
     public var tabs: [TabInfo]
     public var panes: [PaneInfo]
     public var agents: [AgentInfo]
+    /// One entry per tab that has a live layout. Cheap to read on every poll,
+    /// and the only way to notice a split appeared without asking for the tree.
+    public var layouts: [LayoutSummary]
 
     enum CodingKeys: String, CodingKey {
         case version
@@ -29,7 +32,47 @@ public struct SessionSnapshot: Codable, Sendable {
         case focusedPaneId = "focused_pane_id"
         case focusedTabId = "focused_tab_id"
         case focusedWorkspaceId = "focused_workspace_id"
-        case workspaces, tabs, panes, agents
+        case workspaces, tabs, panes, agents, layouts
+    }
+
+    /// Written by hand so a server (or a fixture) that omits a collection
+    /// decodes to an empty one instead of failing the whole snapshot.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decodeIfPresent(String.self, forKey: .version) ?? ""
+        protocolVersion = try container.decodeIfPresent(UInt32.self, forKey: .protocolVersion) ?? 0
+        focusedPaneId = try container.decodeIfPresent(String.self, forKey: .focusedPaneId)
+        focusedTabId = try container.decodeIfPresent(String.self, forKey: .focusedTabId)
+        focusedWorkspaceId = try container.decodeIfPresent(String.self, forKey: .focusedWorkspaceId)
+        workspaces = try container.decodeIfPresent([WorkspaceInfo].self, forKey: .workspaces) ?? []
+        tabs = try container.decodeIfPresent([TabInfo].self, forKey: .tabs) ?? []
+        panes = try container.decodeIfPresent([PaneInfo].self, forKey: .panes) ?? []
+        agents = try container.decodeIfPresent([AgentInfo].self, forKey: .agents) ?? []
+        layouts = try container.decodeIfPresent([LayoutSummary].self, forKey: .layouts) ?? []
+    }
+
+    public func tabs(in workspaceId: String) -> [TabInfo] {
+        tabs.filter { $0.workspaceId == workspaceId }.sorted { $0.number < $1.number }
+    }
+
+    public func panes(in tabId: String) -> [PaneInfo] {
+        panes.filter { $0.tabId == tabId }
+    }
+
+    public func layout(forTab tabId: String) -> LayoutSummary? {
+        layouts.first { $0.tabId == tabId }
+    }
+
+    public func tab(_ tabId: String) -> TabInfo? {
+        tabs.first { $0.tabId == tabId }
+    }
+
+    public func workspace(_ workspaceId: String) -> WorkspaceInfo? {
+        workspaces.first { $0.workspaceId == workspaceId }
+    }
+
+    public func pane(_ paneId: String) -> PaneInfo? {
+        panes.first { $0.paneId == paneId }
     }
 }
 

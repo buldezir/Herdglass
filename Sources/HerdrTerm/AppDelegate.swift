@@ -64,6 +64,7 @@ enum MainMenu {
         mainMenu.addItem(submenu(file()))
         mainMenu.addItem(submenu(edit()))
         mainMenu.addItem(submenu(view()))
+        mainMenu.addItem(submenu(terminal()))
         let windowMenu = window()
         mainMenu.addItem(submenu(windowMenu))
         NSApp.windowsMenu = windowMenu
@@ -103,11 +104,60 @@ enum MainMenu {
     private static func file() -> NSMenu {
         let menu = NSMenu(title: "File")
         menu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
-        menu.addItem(withTitle: "Connect…", action: #selector(MainWindowController.showConnectSheet), keyEquivalent: "k")
+        menu.addItem(withTitle: "Add Host…", action: #selector(MainWindowController.showConnectSheet), keyEquivalent: "k")
+        menu.addItem(withTitle: "New Space", action: #selector(MainWindowController.newSpace(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Reconnect", action: #selector(MainWindowController.reconnect), keyEquivalent: "r")
         menu.addItem(withTitle: "Disconnect", action: #selector(MainWindowController.disconnect), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        // ⌘W closes the tab, the way it does in every other tabbed app; the
+        // window needs the shift.
+        menu.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTab(_:)), keyEquivalent: "w")
+        menu.addItem(
+            withTitle: "Close Window",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"
+        ).keyEquivalentModifierMask = [.command, .shift]
+        return menu
+    }
+
+    /// Tabs and splits, both of which live on the Herdr server; the GUI only
+    /// asks for them.
+    private static func terminal() -> NSMenu {
+        let menu = NSMenu(title: "Terminal")
+        menu.addItem(withTitle: "New Tab", action: #selector(MainWindowController.newTab(_:)), keyEquivalent: "t")
+        menu.addItem(
+            withTitle: "Next Tab",
+            action: #selector(MainWindowController.selectNextTab),
+            keyEquivalent: "]"
+        ).keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(
+            withTitle: "Previous Tab",
+            action: #selector(MainWindowController.selectPreviousTab),
+            keyEquivalent: "["
+        ).keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Split Right", action: #selector(MainWindowController.splitRight), keyEquivalent: "d")
+        menu.addItem(
+            withTitle: "Split Down",
+            action: #selector(MainWindowController.splitDown),
+            keyEquivalent: "d"
+        ).keyEquivalentModifierMask = [.command, .shift]
+        menu.addItem(.separator())
+
+        let focus = NSMenu(title: "Select Split")
+        for (title, selector, key) in [
+            ("Left", #selector(MainWindowController.focusPaneLeft), "\u{F702}"),
+            ("Right", #selector(MainWindowController.focusPaneRight), "\u{F703}"),
+            ("Up", #selector(MainWindowController.focusPaneUp), "\u{F700}"),
+            ("Down", #selector(MainWindowController.focusPaneDown), "\u{F701}"),
+        ] {
+            focus.addItem(withTitle: title, action: selector, keyEquivalent: key)
+                .keyEquivalentModifierMask = [.command, .option]
+        }
+        let focusItem = NSMenuItem(title: "Select Split", action: nil, keyEquivalent: "")
+        focusItem.submenu = focus
+        menu.addItem(focusItem)
         return menu
     }
 

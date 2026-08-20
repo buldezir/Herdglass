@@ -1,39 +1,51 @@
 import AppKit
 import HerdrClient
 
-/// What the sidebar draws. Built by `MainWindowController` so this view stays a
-/// pure renderer with no opinion about sessions or sockets.
+/// What the sidebar draws: hosts as folders, the spaces on each host as their
+/// children. Built by `MainWindowController` so this view stays a pure renderer
+/// with no opinion about sessions or sockets.
 struct SidebarModel {
-    struct Row {
-        var id: String
-        var title: String
-        var subtitle: String
-        var status: AgentStatus
-        var unread: Bool
-        var badge: Int = 0
+    enum Kind {
+        case host
+        case space
     }
 
-    var workspaces: [Row] = []
-    var panes: [String: [Row]] = [:]
+    struct Row {
+        var id: String
+        var kind: Kind
+        var title: String
+        var subtitle: String
+        var status: AgentStatus = .unknown
+        var unread: Bool = false
+        var badge: Int = 0
+        /// A remembered host that is not attached: shown, dimmed, and dialled
+        /// when the user picks it.
+        var offline: Bool = false
+        var busy: Bool = false
+        var symbol: String?
+    }
+
+    var hosts: [Row] = []
+    var spaces: [String: [Row]] = [:]
     var selectedId: String?
     var emptyMessage: String?
 
     /// Row identity in display order. Only a change here needs a full reload;
     /// status and title churn is applied to the existing cells instead.
     var structure: [String] {
-        workspaces.flatMap { [$0.id] + (panes[$0.id]?.map(\.id) ?? []) }
+        hosts.flatMap { [$0.id] + (spaces[$0.id]?.map(\.id) ?? []) }
     }
 
     func row(_ id: String) -> Row? {
-        if let workspace = workspaces.first(where: { $0.id == id }) { return workspace }
-        for rows in panes.values {
-            if let pane = rows.first(where: { $0.id == id }) { return pane }
+        if let host = hosts.first(where: { $0.id == id }) { return host }
+        for rows in spaces.values {
+            if let space = rows.first(where: { $0.id == id }) { return space }
         }
         return nil
     }
 
-    func isWorkspace(_ id: String) -> Bool {
-        workspaces.contains { $0.id == id }
+    func isHost(_ id: String) -> Bool {
+        hosts.contains { $0.id == id }
     }
 }
 
@@ -41,22 +53,28 @@ struct SidebarModel {
 final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate {
     /// Whether the user drove the change with the pointer or the keyboard.
     /// Arrow-key browsing should not yank focus out of the sidebar; a click
-    /// should, because clicking a pane means "let me type in it".
+    /// should, because clicking a space means "let me type in it".
     enum SelectionSource {
         case pointer
         case keyboard
     }
 
-    var onSelectWorkspace: ((String, SelectionSource) -> Void)?
-    var onSelectPane: ((String, SelectionSource) -> Void)?
+    var onSelectHost: ((String, SelectionSource) -> Void)?
+    var onSelectSpace: ((String, SelectionSource) -> Void)?
+    var onAddHost: (() -> Void)?
+    var onReconnectHost: ((String) -> Void)?
+    var onDisconnectHost: ((String) -> Void)?
+    var onForgetHost: ((String) -> Void)?
+    var onNewSpace: ((String) -> Void)?
 
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("SidebarCell")
 
     private let scroll = NSScrollView()
     private let outline = NSOutlineView()
     private let emptyLabel = NSTextField(labelWithString: "")
+    private let addButton = NSButton()
     private var model = SidebarModel()
-    private var collapsedWorkspaces: Set<String> = []
+    private var collapsedHosts: Set<String> = []
     private var isApplyingModel = false
 
     override init(frame frameRect: NSRect) {
@@ -76,6 +94,7 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         outline.allowsMultipleSelection = false
         outline.dataSource = self
         outline.delegate = self
+        outline.menu = buildContextMenu()
 
         scroll.documentView = outline
         scroll.drawsBackground = false
@@ -90,23 +109,42 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         emptyLabel.alignment = .center
         emptyLabel.maximumNumberOfLines = 3
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
-        // A label pinned to both edges hugs at 250, which ties with the split
-        // item's holding priority and pins the sidebar to its minimum width —
-        // the divider then refuses to drag. Nothing in here may have an opinion
-        // about how wide the sidebar is.
-        emptyLabel.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
-        emptyLabel.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
+
+        addButton.title = "Add Host…"
+        addButton.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        addButton.imagePosition = .imageLeading
+        addButton.bezelStyle = .inline
+        addButton.isBordered = false
+        addButton.font = .systemFont(ofSize: 11, weight: .medium)
+        addButton.contentTintColor = .secondaryLabelColor
+        addButton.target = self
+        addButton.action = #selector(addHostTapped)
+        addButton.setAccessibilityIdentifier("AddHostButton")
+        addButton.translatesAutoresizingMaskIntoConstraints = false
+
+        // Nothing in here may have an opinion about how wide the sidebar is: a
+        // subview pinned to both edges hugs at its own width, which ties with
+        // the split item's holding priority and pins the sidebar to its minimum
+        // — the divider then silently refuses to drag.
+        for view in [emptyLabel, addButton] as [NSView] {
+            view.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
+            view.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
+        }
 
         addSubview(scroll)
         addSubview(emptyLabel)
+        addSubview(addButton)
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: addButton.topAnchor, constant: -2),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             emptyLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 20),
             emptyLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
             emptyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            addButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            addButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            addButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
         ])
     }
 
@@ -121,17 +159,17 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
 
         if structureChanged {
             outline.reloadData()
-            for workspace in model.workspaces where !collapsedWorkspaces.contains(workspace.id) {
-                outline.expandItem(workspace.id)
+            for host in model.hosts where !collapsedHosts.contains(host.id) {
+                outline.expandItem(host.id)
             }
         } else {
             // Same rows, new state: reconfigure in place so scroll position and
-            // the user's collapsed workspaces survive every snapshot.
+            // the user's collapsed hosts survive every snapshot.
             refreshVisibleRows()
         }
 
         emptyLabel.stringValue = model.emptyMessage ?? ""
-        emptyLabel.isHidden = model.workspaces.isEmpty == false || model.emptyMessage == nil
+        emptyLabel.isHidden = !model.hosts.isEmpty || model.emptyMessage == nil
         syncSelection()
     }
 
@@ -158,21 +196,72 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         outline.scrollRowToVisible(row)
     }
 
+    // MARK: - Context menu
+
+    private func buildContextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        // `menuNeedsUpdate` decides what applies to the clicked row; AppKit's
+        // own autoenabling would just overwrite it.
+        menu.autoenablesItems = false
+        for (title, action) in [
+            ("New Space", #selector(newSpaceForClickedRow)),
+            ("Reconnect", #selector(reconnectClickedRow)),
+            ("Disconnect", #selector(disconnectClickedRow)),
+            ("Remove Host", #selector(forgetClickedRow)),
+        ] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    /// The host the context menu applies to: the clicked row, or the host that
+    /// owns the clicked space.
+    private var clickedHostId: String? {
+        guard outline.clickedRow >= 0, let id = outline.item(atRow: outline.clickedRow) as? String else { return nil }
+        if model.isHost(id) { return id }
+        return model.spaces.first { $0.value.contains { $0.id == id } }?.key
+    }
+
+    @objc private func addHostTapped() { onAddHost?() }
+
+    @objc private func newSpaceForClickedRow() {
+        guard let id = clickedHostId else { return }
+        onNewSpace?(id)
+    }
+
+    @objc private func reconnectClickedRow() {
+        guard let id = clickedHostId else { return }
+        onReconnectHost?(id)
+    }
+
+    @objc private func disconnectClickedRow() {
+        guard let id = clickedHostId else { return }
+        onDisconnectHost?(id)
+    }
+
+    @objc private func forgetClickedRow() {
+        guard let id = clickedHostId else { return }
+        onForgetHost?(id)
+    }
+
     // MARK: - NSOutlineViewDataSource
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        guard let id = item as? String else { return model.workspaces.count }
-        return model.panes[id]?.count ?? 0
+        guard let id = item as? String else { return model.hosts.count }
+        return model.spaces[id]?.count ?? 0
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let id = item as? String else { return model.workspaces[index].id }
-        return model.panes[id]?[index].id ?? ""
+        guard let id = item as? String else { return model.hosts[index].id }
+        return model.spaces[id]?[index].id ?? ""
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
         guard let id = item as? String else { return false }
-        return !(model.panes[id]?.isEmpty ?? true)
+        return !(model.spaces[id]?.isEmpty ?? true)
     }
 
     // MARK: - NSOutlineViewDelegate
@@ -192,21 +281,41 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         case .leftMouseDown, .leftMouseUp, .rightMouseDown, .otherMouseDown: .pointer
         default: .keyboard
         }
-        if model.isWorkspace(id) {
-            onSelectWorkspace?(id, source)
+        if model.isHost(id) {
+            onSelectHost?(id, source)
         } else {
-            onSelectPane?(id, source)
+            onSelectSpace?(id, source)
         }
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard let id = notification.userInfo?["NSObject"] as? String else { return }
-        collapsedWorkspaces.insert(id)
+        collapsedHosts.insert(id)
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
         guard let id = notification.userInfo?["NSObject"] as? String else { return }
-        collapsedWorkspaces.remove(id)
+        collapsedHosts.remove(id)
+    }
+}
+
+// MARK: - Menu validation
+
+extension SidebarView: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let host = clickedHostId.flatMap { model.row($0) }
+        for item in menu.items {
+            switch item.title {
+            case "New Space":
+                item.isEnabled = host?.offline == false
+            case "Reconnect":
+                item.isEnabled = host != nil
+            case "Disconnect":
+                item.isEnabled = host?.offline == false
+            default:
+                item.isEnabled = host != nil
+            }
+        }
     }
 }
 
@@ -214,6 +323,8 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
 
 private final class SidebarCell: NSTableCellView {
     private let dot = StatusDotView()
+    private let icon = NSImageView()
+    private let spinner = NSProgressIndicator()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let badge = BadgeView()
@@ -232,12 +343,19 @@ private final class SidebarCell: NSTableCellView {
         subtitleLabel.lineBreakMode = .byTruncatingHead
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
+        icon.contentTintColor = .secondaryLabelColor
+
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+
         let text = NSStackView(views: [titleLabel, subtitleLabel])
         text.orientation = .vertical
         text.alignment = .leading
         text.spacing = 1
 
-        let row = NSStackView(views: [dot, text, badge])
+        let row = NSStackView(views: [dot, icon, spinner, text, badge])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
@@ -247,6 +365,7 @@ private final class SidebarCell: NSTableCellView {
         NSLayoutConstraint.activate([
             dot.widthAnchor.constraint(equalToConstant: 10),
             dot.heightAnchor.constraint(equalToConstant: 10),
+            icon.widthAnchor.constraint(equalToConstant: 14),
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -258,9 +377,30 @@ private final class SidebarCell: NSTableCellView {
     func configure(_ row: SidebarModel.Row) {
         titleLabel.stringValue = row.title
         titleLabel.font = .systemFont(ofSize: 12, weight: row.unread ? .semibold : .medium)
+        titleLabel.textColor = row.offline ? .secondaryLabelColor : .labelColor
         subtitleLabel.stringValue = row.subtitle
         subtitleLabel.isHidden = row.subtitle.isEmpty
-        dot.update(status: row.status, unread: row.unread)
+
+        // A host says what it is with an icon; a space says how its agents are
+        // doing with a dot. Showing both would be two indicators for one row.
+        let isHost = row.kind == .host
+        icon.isHidden = !isHost || row.busy
+        dot.isHidden = isHost
+        if let symbol = row.symbol {
+            icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        }
+        icon.contentTintColor = row.unread
+            ? StatusStyle.attentionColor(row.status)
+            : (row.offline ? .tertiaryLabelColor : .secondaryLabelColor)
+
+        if row.busy {
+            spinner.startAnimation(nil)
+        } else {
+            spinner.stopAnimation(nil)
+        }
+        spinner.isHidden = !row.busy
+
+        if !isHost { dot.update(status: row.status, unread: row.unread) }
         badge.count = row.badge
         toolTip = row.subtitle.isEmpty ? row.title : "\(row.title)\n\(row.subtitle)"
     }

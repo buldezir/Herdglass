@@ -3,12 +3,16 @@ import GhosttyKit
 import HerdrClient
 
 /// Hosts one libghostty surface, or an explanatory placeholder when there is
-/// nothing attached.
+/// nothing attached. One of these per Herdr pane; a tab that is split has
+/// several, side by side inside `SplitContainerView`.
 @MainActor
 final class TerminalPaneView: NSView {
     /// Fires when the attached pane's process goes away, so the window can fall
     /// back to a placeholder instead of showing a frozen last frame.
     var onDetach: (() -> Void)?
+    /// The user clicked into this pane. In a split that is how the active pane
+    /// changes, so it has to reach the session and not just libghostty.
+    var onActivate: (() -> Void)?
 
     private var session: GhosttyTerminalSession?
     private var terminalView: GhosttyTerminalView?
@@ -22,18 +26,31 @@ final class TerminalPaneView: NSView {
     private var detachedPaneId: String?
 
     private let placeholder = PlaceholderView()
+    private let ring = AttentionRingView()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         placeholder.translatesAutoresizingMaskIntoConstraints = false
         addSubview(placeholder)
+        ring.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(ring)
         NSLayoutConstraint.activate([
             placeholder.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 24),
             placeholder.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
+            ring.topAnchor.constraint(equalTo: topAnchor),
+            ring.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ring.leadingAnchor.constraint(equalTo: leadingAnchor),
+            ring.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
         showPlaceholder(title: "No pane attached", detail: "Connect to a Herdr host to attach a pane.")
+    }
+
+    /// Borders: the loud one when an agent in this pane wants attention, a quiet
+    /// one to say which pane of a split has the keyboard.
+    func decorate(active: Bool, attention: Bool, status: AgentStatus) {
+        ring.update(attention: attention, active: active, status: status)
     }
 
     required init?(coder: NSCoder) { nil }
@@ -113,6 +130,13 @@ final class TerminalPaneView: NSView {
         let view = GhosttyTerminalView()
         var handlers = session.makeViewHandlers()
         handlers.scrollWheel = { [weak self] event in self?.scroll(event) }
+        // Clicking a pane in a split is how the user moves the active pane, so
+        // the click has to be seen here as well as by libghostty.
+        let mouseButton = handlers.mouseButton
+        handlers.mouseButton = { [weak self] button, pressed, event in
+            if pressed, case .left = button { self?.onActivate?() }
+            return mouseButton(button, pressed, event)
+        }
         view.handlers = handlers
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: placeholder)
@@ -263,5 +287,63 @@ private final class PlaceholderView: NSStackView {
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         self.title.stringValue = title
         self.detail.stringValue = detail
+    }
+}
+
+/// Border drawn over a pane. The loud version says an agent wants attention
+/// (pulsing while it is blocked, steady for an unseen `done`); the quiet version
+/// says which pane of a split has the keyboard.
+private final class AttentionRingView: NSView {
+    private var status: AgentStatus = .idle
+    private var attention = false
+    private var active = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerCurve = .continuous
+        layer?.cornerRadius = 6
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    /// Purely decorative: never take clicks away from the terminal underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        if attention {
+            layer?.borderWidth = 2
+            layer?.borderColor = StatusStyle.attentionColor(status).cgColor
+        } else if active {
+            layer?.borderWidth = 1
+            layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.7).cgColor
+        } else {
+            layer?.borderWidth = 0
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    func update(attention: Bool, active: Bool, status: AgentStatus) {
+        guard attention != self.attention || active != self.active || status != self.status else { return }
+        self.attention = attention
+        self.active = active
+        self.status = status
+        needsDisplay = true
+
+        layer?.removeAnimation(forKey: "pulse")
+        guard attention, status == .blocked else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1.0
+        pulse.toValue = 0.35
+        pulse.duration = 0.85
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        layer?.add(pulse, forKey: "pulse")
     }
 }
