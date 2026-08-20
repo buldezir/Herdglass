@@ -83,6 +83,19 @@ final class TerminalPaneView: NSView {
         scrim.update(dim: dimmed ? GhosttyRuntime.config.unfocusedSplitDim : 0)
     }
 
+    /// Whether this pane is in the tab the window is showing.
+    ///
+    /// A pane whose tab is no longer selected is parked, not torn down: it keeps
+    /// its bridge and libghostty keeps the terminal state, so coming back to the
+    /// tab is a reparent instead of a reconnect. libghostty is told the surface
+    /// is not visible so it stops drawing it, and the attention ring stops
+    /// animating a layer nobody can see — `decorate` puts it back on the way in.
+    func setOnScreen(_ onScreen: Bool) {
+        session?.setOccluded(!onScreen)
+        guard !onScreen else { return }
+        ring.update(attention: false, active: false, status: .idle)
+    }
+
     required init?(coder: NSCoder) { nil }
 
     override var wantsUpdateLayer: Bool { true }

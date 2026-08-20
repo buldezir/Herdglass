@@ -583,7 +583,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     socketPath: socketPath,
                     herdrBinary: session.herdrBinary,
                     executablePath: Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
-                )
+                ),
+                // Panes stay warm across tabs and spaces, but not across hosts:
+                // only the selected host renders, so the key is what tells the
+                // container the panes it is holding belong to someone else now.
+                sessionKey: connections.selectedConnectionId,
+                knownPaneIds: Set((session.snapshot?.panes ?? []).map(\.paneId))
             )
         )
     }

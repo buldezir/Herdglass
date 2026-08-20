@@ -21,6 +21,12 @@ final class SplitContainerView: NSView {
         var activePaneId: String?
         var unreadPaneIds: Set<String> = []
         var attachment: PaneAttachment?
+        /// Which host these panes belong to. Warm panes are dropped when it
+        /// changes: only the selected host renders, so only its bridges run.
+        var sessionKey: String?
+        /// Every pane the host reports, not just this tab's — a warm pane the
+        /// server has stopped reporting has nothing left to come back to.
+        var knownPaneIds: Set<String> = []
     }
 
     /// The user clicked into a pane, or its bridge exited. Both mean the window
@@ -29,9 +35,19 @@ final class SplitContainerView: NSView {
     var onPaneDetached: (() -> Void)?
     var onSplitRatioChanged: (([Bool], Double) -> Void)?
 
+    /// How many panes stay attached after their tab stops being the one on
+    /// screen. Each is a local bridge and a remote `terminal session control`,
+    /// so this is a ceiling on the price of instant switching, not a cache that
+    /// grows with the session.
+    static let maxWarmPanes = 8
+
     private var paneViews: [String: TerminalPaneView] = [:]
     private var splitViews: [String: SplitNodeView] = [:]
     private var structureSignature: String?
+    /// When each pane was last on screen, so the panes evicted first are the
+    /// tabs the user left longest ago.
+    private var lastOnScreen: [String: Int] = [:]
+    private var onScreenClock = 0
     private let placeholder = TerminalPaneView()
     private var model = Model()
 
@@ -74,31 +90,64 @@ final class SplitContainerView: NSView {
     }
 
     func apply(_ model: Model) {
+        let previousSessionKey = self.model.sessionKey
         self.model = model
         guard let tree = model.tree, !tree.paneIds.isEmpty else {
             return
         }
+        if model.sessionKey != previousSessionKey { clearPanes() }
 
         placeholder.isHidden = true
         placeholder.teardown()
 
-        // Panes that left the tree take their bridge with them; keeping them
-        // attached would leave `herdr terminal session control` running for a
-        // pane nobody is looking at.
-        let live = Set(tree.paneIds)
-        for (paneId, view) in paneViews where !live.contains(paneId) {
-            view.teardown()
+        let live = tree.paneIds
+        let liveIds = Set(live)
+        onScreenClock += 1
+        for paneId in live { lastOnScreen[paneId] = onScreenClock }
+
+        // A pane that left the tree keeps its bridge and its terminal state:
+        // coming back to the tab is then a reparent rather than a reconnect,
+        // which is the whole difference between switching and reattaching. It is
+        // unparented and told it is off screen so libghostty stops drawing it.
+        for (paneId, view) in paneViews where !liveIds.contains(paneId) {
+            view.setOnScreen(false)
             view.removeFromSuperview()
-            paneViews.removeValue(forKey: paneId)
         }
+        evictWarmPanes(live: liveIds)
 
         if tree.structureSignature != structureSignature {
             rebuild(tree)
             structureSignature = tree.structureSignature
         }
+        for paneId in live { paneViews[paneId]?.setOnScreen(true) }
         applyRatios(tree, path: [])
-        decorate()
-        attachPanes()
+        decorate(live: live)
+        attachPanes(live: live)
+    }
+
+    /// Warm panes are not free, so they are bounded twice over: a pane the
+    /// server no longer reports is torn down whatever its age, and the rest are
+    /// capped at `maxWarmPanes`, oldest tab first.
+    private func evictWarmPanes(live: Set<String>) {
+        var warm = paneViews.keys.filter { !live.contains($0) }
+        if !model.knownPaneIds.isEmpty {
+            for paneId in warm where !model.knownPaneIds.contains(paneId) {
+                teardownPane(paneId)
+            }
+            warm = warm.filter { paneViews[$0] != nil }
+        }
+        guard warm.count > Self.maxWarmPanes else { return }
+        let stale = warm
+            .sorted { lastOnScreen[$0] ?? 0 > lastOnScreen[$1] ?? 0 }
+            .dropFirst(Self.maxWarmPanes)
+        for paneId in stale { teardownPane(paneId) }
+    }
+
+    private func teardownPane(_ paneId: String) {
+        guard let view = paneViews.removeValue(forKey: paneId) else { return }
+        view.teardown()
+        view.removeFromSuperview()
+        lastOnScreen.removeValue(forKey: paneId)
     }
 
     // MARK: - Hierarchy
@@ -145,10 +194,11 @@ final class SplitContainerView: NSView {
         applyRatios(second, path: path + [true])
     }
 
-    private func decorate() {
+    private func decorate(live: [String]) {
         let panesById = Dictionary(model.panes.map { ($0.paneId, $0) }, uniquingKeysWith: { first, _ in first })
-        let isSplit = paneViews.count > 1
-        for (paneId, view) in paneViews {
+        let isSplit = live.count > 1
+        for paneId in live {
+            guard let view = paneViews[paneId] else { continue }
             let pane = panesById[paneId]
             view.decorate(
                 active: paneId == model.activePaneId,
@@ -159,9 +209,10 @@ final class SplitContainerView: NSView {
         }
     }
 
-    private func attachPanes() {
+    private func attachPanes(live: [String]) {
         guard let attachment = model.attachment else { return }
-        for (paneId, view) in paneViews {
+        for paneId in live {
+            guard let view = paneViews[paneId] else { continue }
             view.attach(
                 paneId: paneId,
                 socketPath: attachment.socketPath,
@@ -178,6 +229,7 @@ final class SplitContainerView: NSView {
         }
         paneViews.removeAll()
         splitViews.removeAll()
+        lastOnScreen.removeAll()
         structureSignature = nil
         for view in subviews where view !== placeholder {
             view.removeFromSuperview()

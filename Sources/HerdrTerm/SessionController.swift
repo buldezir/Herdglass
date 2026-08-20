@@ -55,9 +55,20 @@ final class SessionController {
     private(set) var state: State = .disconnected
     private(set) var unreadPaneIds: Set<String> = []
     private(set) var socketPath: String?
-    /// Split tree of the selected tab. Only one tab is on screen at a time, so
-    /// only one tree is ever fetched.
-    private(set) var layout: LayoutTree?
+    /// Split trees, one per tab, each remembered with the layout signature it
+    /// was fetched for. A tree outlives leaving its tab: coming back to a tab
+    /// that has to guess at a single pane first, and re-split a round trip
+    /// later, is exactly what reads as a reconnect.
+    private var layoutTrees: [String: (key: String, tree: LayoutTree)] = [:]
+
+    /// Split tree of the selected tab, as long as every pane in it still
+    /// exists. A tree whose signature has moved on is still worth drawing while
+    /// the refetch is in flight — the alternative is a single-pane guess and a
+    /// visible re-split a moment later.
+    var layout: LayoutTree? {
+        guard let selectedTabId else { return nil }
+        return usableTree(forTab: selectedTabId)
+    }
 
     /// Whether this connection is the one the window is showing. A pane the user
     /// can actually see is a pane that has been read.
@@ -85,10 +96,12 @@ final class SessionController {
     private var retryTimer: Timer?
     private var lastReconnect: Date = .distantPast
     private var connectGeneration = 0
-    /// Which layout the cached tree belongs to, so it is re-fetched when the
-    /// snapshot says the tab's splits or ratios moved and not on every poll.
-    private var layoutKey: String?
-    private var layoutFetchKey: String?
+    /// Tabs with a `layout.export` in flight, so a poll every two seconds
+    /// cannot pile requests onto the same tab.
+    private var layoutFetches: Set<String> = []
+    /// Tab id to the signature we last prefetched it for, so a prefetch that
+    /// fails is not retried on every poll.
+    private var layoutPrefetches: [String: String] = [:]
     /// Held here rather than captured by the worker closure: a UI callback is
     /// not `Sendable` and must not cross to a background queue.
     private var pendingConnect: ((Error?) -> Void)?
@@ -161,9 +174,9 @@ final class SessionController {
         selectedTabId = nil
         selectedPaneId = nil
         socketPath = nil
-        layout = nil
-        layoutKey = nil
-        layoutFetchKey = nil
+        layoutTrees = [:]
+        layoutFetches = []
+        layoutPrefetches = [:]
         unreadPaneIds = []
         attentionOrder = []
         state = .disconnected
@@ -202,37 +215,40 @@ final class SessionController {
     func selectSpace(_ workspaceId: String) {
         guard let snapshot else { return }
         selectedWorkspaceId = workspaceId
-        let tabs = snapshot.tabs(in: workspaceId)
-        let tab = tabs.first { tabWantsAttention($0.tabId) }
-            ?? tabs.first { $0.tabId == snapshot.workspace(workspaceId)?.activeTabId }
-            ?? tabs.first { $0.focused }
-            ?? tabs.first
-        if let tab {
+        if let tab = preferredTab(in: workspaceId, snapshot: snapshot) {
             selectTab(tab.tabId)
         } else {
             selectedTabId = nil
             selectedPaneId = nil
-            layout = nil
             focusRemoteWorkspace(workspaceId)
             delegate?.sessionDidUpdate(self)
         }
     }
 
+    /// Where picking a space lands: a tab that wants attention first, then the
+    /// one Herdr has active or focused. Shared with the layout prefetch, so the
+    /// tree that gets fetched ahead of time is the tab the user will land on.
+    private func preferredTab(in workspaceId: String, snapshot: SessionSnapshot) -> TabInfo? {
+        let tabs = snapshot.tabs(in: workspaceId)
+        return tabs.first { tabWantsAttention($0.tabId) }
+            ?? tabs.first { $0.tabId == snapshot.workspace(workspaceId)?.activeTabId }
+            ?? tabs.first { $0.focused }
+            ?? tabs.first
+    }
+
+    /// Where picking a tab lands, on the same principle.
+    private func preferredPane(in tabId: String, snapshot: SessionSnapshot) -> PaneInfo? {
+        let panes = snapshot.panes(in: tabId)
+        return panes.first { unreadPaneIds.contains($0.paneId) }
+            ?? panes.first { $0.focused }
+            ?? panes.first
+    }
+
     func selectTab(_ tabId: String) {
         guard let snapshot, let tab = snapshot.tab(tabId) else { return }
         selectedWorkspaceId = tab.workspaceId
-        if selectedTabId != tabId {
-            selectedTabId = tabId
-            // A tree belonging to the tab we just left must not be drawn for
-            // the new one, not even for the frame before the fetch lands.
-            layout = nil
-            layoutKey = nil
-        }
-        let panes = snapshot.panes(in: tabId)
-        let pane = panes.first { unreadPaneIds.contains($0.paneId) }
-            ?? panes.first { $0.focused }
-            ?? panes.first
-        if let pane {
+        selectedTabId = tabId
+        if let pane = preferredPane(in: tabId, snapshot: snapshot) {
             selectPane(pane.paneId)
         } else {
             selectedPaneId = nil
@@ -246,11 +262,7 @@ final class SessionController {
     /// a pane inside a split never leaves the sidebar pointing somewhere else.
     func selectPane(_ paneId: String) {
         guard let pane = snapshot?.pane(paneId) else { return }
-        if selectedTabId != pane.tabId {
-            selectedTabId = pane.tabId
-            layout = nil
-            layoutKey = nil
-        }
+        selectedTabId = pane.tabId
         selectedWorkspaceId = pane.workspaceId
         selectedPaneId = paneId
         markVisiblePanesRead()
@@ -491,6 +503,11 @@ final class SessionController {
         unreadPaneIds.formIntersection(liveIds)
         attentionOrder.removeAll { !unreadPaneIds.contains($0) }
 
+        // A tab that closed takes its cached tree with it.
+        let liveTabs = Set(snapshot.tabs.map(\.tabId))
+        layoutTrees = layoutTrees.filter { liveTabs.contains($0.key) }
+        layoutPrefetches = layoutPrefetches.filter { liveTabs.contains($0.key) }
+
         refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
     }
@@ -516,8 +533,6 @@ final class SessionController {
         if selectedTabId == nil {
             let focused = snapshot.focusedTabId.flatMap { id in tabs.first { $0.tabId == id } }
             selectedTabId = (focused ?? tabs.first { $0.focused } ?? tabs.first)?.tabId
-            layout = nil
-            layoutKey = nil
         }
         guard let tabId = selectedTabId else { return }
 
@@ -544,25 +559,80 @@ final class SessionController {
         }
     }
 
-    /// Ask for the split tree only when the snapshot says this tab's layout is
-    /// not the one already drawn — the tree is a second round trip, and the poll
-    /// runs every two seconds.
-    private func refreshLayoutIfNeeded() {
-        guard isVisible, let rpc, let tabId = selectedTabId, let snapshot else { return }
-        let summary = snapshot.layout(forTab: tabId)
-        let key = "\(tabId)|\(summary?.signature ?? "none")"
-        guard key != layoutKey, key != layoutFetchKey else { return }
-        layoutFetchKey = key
+    /// The tree we can draw for a tab: the one Herdr last reported, unless a
+    /// pane in it has since closed — that pane would be drawn as a leaf with no
+    /// bridge behind it.
+    private func usableTree(forTab tabId: String) -> LayoutTree? {
+        guard let cached = layoutTrees[tabId] else { return nil }
+        guard let snapshot else { return cached.tree }
+        let live = Set(snapshot.panes(in: tabId).map(\.paneId))
+        guard cached.tree.paneIds.allSatisfy(live.contains) else { return nil }
+        return cached.tree
+    }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+    /// Ask for the split tree only when the snapshot says this tab's layout is
+    /// not the one already cached — the tree is a second round trip, and the
+    /// poll runs every two seconds. Tabs the user is one click away from are
+    /// then filled in behind that, so switching has nothing to wait for.
+    private func refreshLayoutIfNeeded() {
+        guard isVisible, let snapshot else { return }
+        if let tabId = selectedTabId {
+            fetchLayout(tabId: tabId, key: layoutKey(forTab: tabId, in: snapshot), prefetch: false)
+        }
+        prefetchLayouts(snapshot)
+    }
+
+    private func layoutKey(forTab tabId: String, in snapshot: SessionSnapshot) -> String {
+        "\(tabId)|\(snapshot.layout(forTab: tabId)?.signature ?? "none")"
+    }
+
+    /// Trees for the rest of this space, and for wherever each other space would
+    /// land. Only tabs with no tree at all are fetched: one that has merely gone
+    /// stale already draws immediately and refetches when it is selected, so
+    /// this settles to nothing rather than repeating on every poll.
+    ///
+    /// One request at a time, behind the selected tab's own fetch, so the
+    /// prefetch can never delay what is on screen.
+    private func prefetchLayouts(_ snapshot: SessionSnapshot) {
+        guard layoutFetches.isEmpty else { return }
+        var tabIds: [String] = []
+        if let selectedWorkspaceId {
+            tabIds += snapshot.tabs(in: selectedWorkspaceId).map(\.tabId)
+        }
+        for workspace in snapshot.workspaces where workspace.workspaceId != selectedWorkspaceId {
+            if let tab = preferredTab(in: workspace.workspaceId, snapshot: snapshot) {
+                tabIds.append(tab.tabId)
+            }
+        }
+        for tabId in tabIds where layoutTrees[tabId] == nil {
+            let key = layoutKey(forTab: tabId, in: snapshot)
+            guard layoutPrefetches[tabId] != key else { continue }
+            layoutPrefetches[tabId] = key
+            fetchLayout(tabId: tabId, key: key, prefetch: true)
+            return
+        }
+    }
+
+    private func fetchLayout(tabId: String, key: String, prefetch: Bool) {
+        guard let rpc, layoutTrees[tabId]?.key != key, !layoutFetches.contains(tabId) else { return }
+        layoutFetches.insert(tabId)
+        DispatchQueue.global(qos: prefetch ? .utility : .userInitiated).async { [weak self] in
             let tree = try? rpc.layout(tabId: tabId)
             DispatchQueue.main.async {
-                guard let self, self.rpc === rpc, self.selectedTabId == tabId else { return }
-                self.layoutFetchKey = nil
-                guard let tree else { return }
-                self.layout = tree
-                self.layoutKey = key
-                self.delegate?.sessionDidUpdate(self)
+                guard let self, self.rpc === rpc else { return }
+                self.layoutFetches.remove(tabId)
+                if let tree {
+                    self.layoutTrees[tabId] = (key, tree)
+                    // A prefetch changes nothing the window is drawing now.
+                    if tabId == self.selectedTabId { self.delegate?.sessionDidUpdate(self) }
+                }
+                // Take the next tab straight after this one rather than one per
+                // poll: a cache that needs two seconds a tab to warm up has not
+                // warmed up by the time the user switches. The chain ends
+                // because every tab is marked as attempted before it is asked
+                // for — including one whose fetch failed, which is what keeps a
+                // failure from becoming a retry loop.
+                if prefetch { self.refreshLayoutIfNeeded() }
             }
         }
     }
