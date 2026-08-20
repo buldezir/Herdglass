@@ -75,8 +75,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         paneController.view = buildTerminalArea()
 
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebarController)
-        sidebarItem.minimumThickness = 200
-        sidebarItem.maximumThickness = 340
+        sidebarItem.minimumThickness = 180
+        sidebarItem.maximumThickness = 460
         sidebarItem.canCollapse = true
         sidebarItem.holdingPriority = .defaultLow
 
@@ -177,7 +177,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func installWorkspaceKeyMonitor() {
         workspaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
-            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return event }
+            // `.numericPad` rides along on the keypad digits, and caps lock is
+            // never part of the shortcut; anything else means this is not ⌘n.
+            let modifiers = event.modifierFlags
+                .intersection(.deviceIndependentFlagsMask)
+                .subtracting([.numericPad, .capsLock])
+            guard modifiers == .command else { return event }
             guard
                 let characters = event.charactersIgnoringModifiers,
                 let number = UInt(characters), (1...9).contains(number),

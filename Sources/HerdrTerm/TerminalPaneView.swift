@@ -13,6 +13,10 @@ final class TerminalPaneView: NSView {
     private var session: GhosttyTerminalSession?
     private var terminalView: GhosttyTerminalView?
     private var currentPaneId: String?
+    /// Side channel to the bridge for anything that is not a keystroke.
+    private var control: PaneControlChannel?
+    /// Trackpad deltas arrive in pixels; herdr scrolls in whole lines.
+    private var scrollRemainder: CGFloat = 0
     /// A pane whose bridge exited on its own. Re-attaching it automatically
     /// would spin: exit, placeholder, refresh, attach, exit. Wait to be asked.
     private var detachedPaneId: String?
@@ -66,6 +70,9 @@ final class TerminalPaneView: NSView {
         placeholder.isHidden = true
         currentPaneId = paneId
 
+        let control = PaneControlChannel()
+        self.control = control
+
         var launch = GhosttyTerminalLaunchConfiguration()
         launch.command = executablePath + " --bridge"
         launch.environment = [
@@ -73,12 +80,22 @@ final class TerminalPaneView: NSView {
             "HERDR_SOCKET_PATH": socketPath,
             "HERDR_BIN": herdrBinary,
         ]
+        if let control {
+            launch.environment[PaneControlChannel.environmentKey] = control.path
+        }
 
         let session = host.makeSession(configuration: launch)
         session.closeHandler = { [weak self] _ in
             self?.handleSessionClosed()
         }
-        let view = session.makeView()
+        // `makeView()` with one handler swapped: the surface renders whatever
+        // herdr sends and holds no scrollback of its own, so a wheel event has
+        // to become `terminal.scroll` on the server instead.
+        let view = GhosttyTerminalView()
+        var handlers = session.makeViewHandlers()
+        handlers.scrollWheel = { [weak self] event in self?.scroll(event) }
+        view.handlers = handlers
+        session.attach(to: view)
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: placeholder)
         NSLayoutConstraint.activate([
@@ -102,6 +119,9 @@ final class TerminalPaneView: NSView {
     }
 
     func teardown() {
+        control?.close()
+        control = nil
+        scrollRemainder = 0
         guard let session else {
             currentPaneId = nil
             return
@@ -116,6 +136,39 @@ final class TerminalPaneView: NSView {
         currentPaneId = nil
         GhosttyRuntime.paneDetached()
         needsDisplay = true
+    }
+
+    /// Wheel and trackpad both land here. AppKit has already applied the
+    /// user's natural-scrolling preference, so a positive delta always means
+    /// "show me earlier output".
+    private func scroll(_ event: NSEvent) {
+        guard let control else { return }
+        if event.phase == .began { scrollRemainder = 0 }
+        let delta = event.scrollingDeltaY
+        guard delta != 0 else { return }
+
+        let lines: CGFloat
+        if event.hasPreciseScrollingDeltas {
+            scrollRemainder += delta
+            lines = (scrollRemainder / lineHeight).rounded(.towardZero)
+            scrollRemainder -= lines * lineHeight
+        } else {
+            // One notch of a wheel mouse is one unit; three lines is what every
+            // other terminal does with it.
+            lines = (delta * 3).rounded(delta > 0 ? .up : .down)
+        }
+        guard lines != 0 else { return }
+        // A flung trackpad can produce absurd deltas; herdr clamps at the top
+        // of the scrollback anyway, this just keeps the message sane.
+        let count = min(Int(abs(lines)), 500)
+        control.scroll(lines > 0 ? .up : .down, lines: count)
+    }
+
+    /// Point height of one terminal row. libghostty reports the cell in pixels.
+    private var lineHeight: CGFloat {
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        guard let cell = session?.state.cellSize, cell.height > 0, scale > 0 else { return 18 }
+        return CGFloat(cell.height) / scale
     }
 
     private func handleSessionClosed() {

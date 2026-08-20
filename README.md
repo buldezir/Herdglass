@@ -42,6 +42,7 @@ Frame / control JSON (Herdr 0.8.2):
 - `{ "type": "terminal.frame", "bytes": "<base64>", "encoding": "ansi", "full": true, "width": 80, "height": 24, "seq": 1 }`
 - `{ "type": "terminal.input", "bytes": "<base64>" }` or `{ "type": "terminal.input", "text": "..." }` (not both)
 - `{ "type": "terminal.resize", "cols": 80, "rows": 24 }`
+- `{ "type": "terminal.scroll", "direction": "up" | "down", "lines": 3, "source": "wheel" | "page_key" }`
 - `{ "type": "terminal.release" }`
 
 Requests on the API socket are **one-shot**: Herdr answers a single request and closes the connection. Only `events.subscribe` stays open and streams.
@@ -60,7 +61,9 @@ v1 shows **one focused pane** at a time. Remote splits still exist on the server
 | `⌃⌘S` | Toggle sidebar |
 | `⌃⌘F` | Full screen |
 
-Clicking a pane moves keyboard focus into the terminal; arrow keys browse the sidebar without stealing it.
+Clicking a pane moves keyboard focus into the terminal; arrow keys browse the sidebar without stealing it. The sidebar is draggable between 180 and 460 pt and its width is remembered.
+
+Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becomes a `terminal.scroll` on the server, which then sends the frame for the new viewport.
 
 ## Command line
 

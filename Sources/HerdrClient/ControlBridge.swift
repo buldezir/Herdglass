@@ -16,6 +16,7 @@ public enum ControlBridge {
         }
         let herdr = env["HERDR_BIN"] ?? HerdrPaths.localHerdrBinary()
         let socket = env["HERDR_SOCKET_PATH"]
+        let cookedTerminal = enterRawMode()
         var size = currentWinSize()
         if size.cols == 0 { size.cols = 80 }
         if size.rows == 0 { size.rows = 24 }
@@ -47,14 +48,33 @@ public enum ControlBridge {
         io.startStdin()
         io.startWinch()
         io.startHerdrOutput(fromHerdr.fileHandleForReading)
+        if let controlPipe = env[PaneControlChannel.environmentKey], !controlPipe.isEmpty {
+            io.startControlPipe(at: controlPipe)
+        }
 
         proc.waitUntilExit()
         io.close()
+        if var cookedTerminal { tcsetattr(STDIN_FILENO, TCSAFLUSH, &cookedTerminal) }
         // Keep pipes alive until herdr has fully exited.
         withExtendedLifetime(toHerdr) {}
         withExtendedLifetime(fromHerdr) {}
         exit(proc.terminationStatus == 0 ? 0 : max(Int32(proc.terminationStatus), 1))
     }
+}
+
+/// libghostty hands the bridge a *cooked* PTY, which is wrong in every way for
+/// a pane whose keyboard lives on another machine: `icanon` holds keystrokes
+/// until Enter so a TUI never sees an arrow key, `echo` paints them locally on
+/// top of Herdr's frames, and `isig` turns ^C into a signal that kills the
+/// bridge instead of a byte for the program in the pane. Returns the previous
+/// settings so they can be put back.
+private func enterRawMode() -> termios? {
+    var original = termios()
+    guard isatty(STDIN_FILENO) == 1, tcgetattr(STDIN_FILENO, &original) == 0 else { return nil }
+    var raw = original
+    cfmakeraw(&raw)
+    guard tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0 else { return nil }
+    return original
 }
 
 private final class BridgeIO: @unchecked Sendable {
@@ -65,6 +85,7 @@ private final class BridgeIO: @unchecked Sendable {
     private let lines = LineBuffer()
     private var stdinSource: DispatchSourceRead?
     private var winchSource: DispatchSourceSignal?
+    private var controlSource: DispatchSourceRead?
     private var closed = false
 
     init(process: Process, herdrIn: FileHandle) {
@@ -79,6 +100,7 @@ private final class BridgeIO: @unchecked Sendable {
         writeLock.unlock()
         stdinSource?.cancel()
         winchSource?.cancel()
+        controlSource?.cancel()
     }
 
     func send(_ object: [String: Any]) {
@@ -109,6 +131,38 @@ private final class BridgeIO: @unchecked Sendable {
         }
         source.resume()
         stdinSource = source
+    }
+
+    /// Commands the GUI cannot express as keystrokes — scrolling herdr's own
+    /// scrollback, which stdin cannot reach because stdin is the pane's
+    /// keyboard. Forwarded verbatim; the FIFO is ours and per pane.
+    func startControlPipe(at path: String) {
+        // O_RDWR mirrors the GUI side: neither end may ever see EOF just
+        // because the other is idle.
+        let fd = open(path, O_RDWR | O_NONBLOCK)
+        guard fd >= 0 else {
+            fputs("herdr-term-bridge: cannot open control pipe \(path)\n", stderr)
+            return
+        }
+        let commands = LineBuffer()
+        let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: .global(qos: .userInteractive))
+        source.setEventHandler { [self] in
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            let n = read(fd, &buffer, buffer.count)
+            guard n > 0 else { return }
+            commands.append(Data(buffer.prefix(n)))
+            while let line = commands.popLine() {
+                guard
+                    let command = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                    let type = command["type"] as? String,
+                    type.hasPrefix("terminal.")
+                else { continue }
+                send(command)
+            }
+        }
+        source.setCancelHandler { Darwin.close(fd) }
+        source.resume()
+        controlSource = source
     }
 
     func startWinch() {

@@ -90,6 +90,12 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         emptyLabel.alignment = .center
         emptyLabel.maximumNumberOfLines = 3
         emptyLabel.translatesAutoresizingMaskIntoConstraints = false
+        // A label pinned to both edges hugs at 250, which ties with the split
+        // item's holding priority and pins the sidebar to its minimum width —
+        // the divider then refuses to drag. Nothing in here may have an opinion
+        // about how wide the sidebar is.
+        emptyLabel.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
+        emptyLabel.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
 
         addSubview(scroll)
         addSubview(emptyLabel)

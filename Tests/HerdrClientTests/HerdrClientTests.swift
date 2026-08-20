@@ -353,3 +353,43 @@ private let emptySnapshotJSON = """
     let subscription = try HerdrRPC(socketPath: server.path).subscribe {}
     subscription.cancel()
 }
+
+// MARK: - Pane control channel
+
+@Test func controlChannelFramesScrollCommandsAsNDJSON() throws {
+    let channel = try #require(PaneControlChannel())
+    defer { channel.close() }
+
+    channel.scroll(.up, lines: 3)
+    channel.scroll(.down, lines: 1)
+    // Herdr rejects the whole command when `lines` is not positive, so the
+    // channel must not put one on the wire at all.
+    channel.scroll(.up, lines: 0)
+
+    let fd = open(channel.path, O_RDONLY | O_NONBLOCK)
+    try #require(fd >= 0)
+    defer { close(fd) }
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    let n = read(fd, &buffer, buffer.count)
+    try #require(n > 0)
+
+    let lines = LineBuffer()
+    lines.append(Data(buffer.prefix(n)))
+    var commands: [[String: String]] = []
+    while let line = lines.popLine() {
+        let object = try #require(try JSONSerialization.jsonObject(with: line) as? [String: Any])
+        commands.append(object.mapValues { "\($0)" })
+    }
+
+    #expect(commands.count == 2)
+    #expect(commands.first == ["type": "terminal.scroll", "direction": "up", "lines": "3", "source": "wheel"])
+    #expect(commands.last?["direction"] == "down")
+}
+
+@Test func controlChannelRemovesItsFIFOOnClose() throws {
+    let channel = try #require(PaneControlChannel())
+    let path = channel.path
+    #expect(FileManager.default.fileExists(atPath: path))
+    channel.close()
+    #expect(!FileManager.default.fileExists(atPath: path))
+}

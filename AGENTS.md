@@ -26,7 +26,8 @@ GUI  --spawns-->  HerdrTerm --bridge  --herdr terminal session control-->  forwa
 2. Find remote `herdr` at Homebrew/mise/Nix/`~/.local/bin` — non-interactive PATH has no Homebrew
 3. Ensure `herdr server`, parse `socket:` from `herdr status server`
 4. Forward **both** `herdr.sock` (API) and `herdr-client.sock` (direct terminal attach)
-5. Focused pane: Ghostty launches `HerdrTerm --bridge`, which speaks NDJSON `terminal.frame` / `terminal.input` / `terminal.resize` / `terminal.release`
+5. Focused pane: Ghostty launches `HerdrTerm --bridge`, which speaks NDJSON `terminal.frame` / `terminal.input` / `terminal.resize` / `terminal.scroll` / `terminal.release`
+6. Scroll wheel: the GUI writes `terminal.scroll` to a per-pane FIFO (`PaneControlChannel`, path in `HERDR_TERM_CONTROL_PIPE`) that the bridge forwards
 
 `SessionController` owns connection state; `MainWindowController` turns a snapshot into a `SidebarModel` and drives `TerminalPaneView`. `StatusStyle` is the only place agent status becomes a color or a word.
 
@@ -49,6 +50,8 @@ before touching `HerdrRPC` or `SessionController`.
 
 - **A rejected subscription arrives as a line on the stream, not as a thrown error.** `subscribe` therefore reads the `subscription_started` acknowledgement synchronously and throws on anything else. Without that, a rejection is indistinguishable from a quiet session: the stream stays open, no event ever lands, and the poll fallback never engages. Covered by `subscribeThrowsWhenTheServerRejectsTheSubscription`.
 - **Keep the poll behind the event stream.** It is not redundant: agent status is only pushed by the pane-scoped `pane.agent_status_changed`, which a session-wide client cannot subscribe to, so attention rings would otherwise depend on some other event happening to fire. `SessionController` polls every 2 s alongside events, and every 0.9 s when the server refuses to subscribe us.
+- **Scrolling cannot ride the PTY.** Everything the surface writes to the bridge's stdin becomes `terminal.input`, i.e. keystrokes for the program in the pane, and libghostty's own scrollback is empty because it only ever sees full viewport frames. Herdr owns the history and moves it only for `{"type":"terminal.scroll","direction":"up"|"down","lines":>0,"source":"wheel"|"page_key"}` — hence the FIFO side channel, and hence `TerminalPaneView` replacing the view's `scrollWheel` handler instead of letting libghostty handle the wheel. Both ends open the FIFO `O_RDWR` so an idle peer never reads as EOF. `controlChannelFramesScrollCommandsAsNDJSON` covers the framing; `lines: 0` and a bad `direction` make Herdr drop the command.
+- **The bridge must put its PTY into raw mode.** libghostty hands the child a cooked terminal: `icanon` holds keystrokes until Enter (a TUI in the pane never sees an arrow key, or anything else, until you hit return), `echo` paints them locally over Herdr's frames, `isig` turns ^C into a signal that kills the bridge — its `herdr terminal session control` child then dies writing frames and prints `BrokenPipe` into the pane — and `ixon` eats ^S/^Q. `ControlBridge.enterRawMode()` does this before spawning herdr and restores the old settings afterwards. `stty -f /dev/ttysNN -a` on the bridge's tty must show `-icanon -isig -echo`.
 - Remote scripts must go to `ssh host bash -s` on **stdin**. Extra argv after the host is joined with spaces and executed by zsh, which splits on `;`.
 - `HERDR_SOCKET_PATH=.../herdr.sock` makes `herdr terminal session control` open `.../herdr-client.sock`. Forward both or control fails with "No such file or directory".
 - Never `FileHandle.write` to a pipe that a child may have closed; EPIPE becomes an ObjC exception and `abort()`s. Use `writeIgnoringBrokenPipe` and keep `HerdrProcess.setUp()` (SIGPIPE ignored) on every entry point.
@@ -61,6 +64,7 @@ before touching `HerdrRPC` or `SessionController`.
 
 - No hardcoded colors. Semantic `NSColor`s and `StatusStyle` only, so light mode works; the sidebar's translucency comes from `NSSplitViewItem(sidebarWithViewController:)`.
 - The content pane is pinned to `safeAreaLayoutGuide`, not raw bounds — the window uses `.fullSizeContentView` and content would otherwise sit under the toolbar.
+- Nothing inside the sidebar may have an opinion about its width. A subview pinned to both edges hugs at 250, which ties with `NSSplitViewItem.holdingPriority`, and the divider then silently refuses to drag at all — that is how `emptyLabel` froze the sidebar at `minimumThickness`. Give any such view hugging and compression resistance of 1.
 - `SidebarView.apply` reloads only when row identity changes and reconfigures cells in place otherwise; a full `reloadData` on every snapshot would throw away scroll position and the user's collapsed workspaces.
 - libghostty's tick is reference counted by attached panes (`GhosttyRuntime`), not left running at 60 Hz forever.
 - Window-scoped key monitors must be removed in `windowWillClose`, or a closed window keeps swallowing ⌘1…⌘9.
