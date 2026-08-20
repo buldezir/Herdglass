@@ -10,7 +10,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let sidebar = SidebarView()
     private let terminal = TerminalPaneView()
     private let ring = AttentionRingView()
-    private let splitController = NSSplitViewController()
+    private let splitController = SidebarSplitViewController()
     private var attentionItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
     private var workspaceKeyMonitor: Any?
@@ -67,7 +67,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Layout
 
-    private func buildSplitController() -> NSSplitViewController {
+    private func buildSplitController() -> SidebarSplitViewController {
         let sidebarController = NSViewController()
         sidebarController.view = sidebar
 
@@ -85,7 +85,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         splitController.addSplitViewItem(sidebarItem)
         splitController.addSplitViewItem(paneItem)
-        splitController.splitView.autosaveName = "HerdrTermSidebar"
         return splitController
     }
 
