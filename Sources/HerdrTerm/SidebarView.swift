@@ -90,8 +90,8 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         outline.outlineTableColumn = column
         outline.headerView = nil
         outline.style = .sourceList
-        outline.rowHeight = 42
-        outline.indentationPerLevel = 12
+        outline.rowHeight = ChromeMetrics.length(42)
+        outline.indentationPerLevel = ChromeMetrics.length(12)
         outline.backgroundColor = .clear
         outline.selectionHighlightStyle = .regular
         outline.allowsEmptySelection = true
@@ -108,7 +108,7 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         scroll.borderType = .noBorder
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        emptyLabel.font = .systemFont(ofSize: 11)
+        emptyLabel.font = ChromeMetrics.font(11)
         emptyLabel.textColor = .secondaryLabelColor
         emptyLabel.alignment = .center
         emptyLabel.maximumNumberOfLines = 3
@@ -119,7 +119,7 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         addButton.imagePosition = .imageLeading
         addButton.bezelStyle = .inline
         addButton.isBordered = false
-        addButton.font = .systemFont(ofSize: 11, weight: .medium)
+        addButton.font = ChromeMetrics.font(11, weight: .medium)
         addButton.contentTintColor = .secondaryLabelColor
         addButton.target = self
         addButton.action = #selector(addHostTapped)
@@ -150,9 +150,34 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
             addButton.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
             addButton.bottomAnchor.constraint(equalTo: safeAreaLayoutGuide.bottomAnchor, constant: -8),
         ])
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(chromeMetricsDidChange),
+            name: ChromeMetrics.didChangeNotification,
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// A new base font size. Rows are recycled by identifier, so the cells
+    /// already made have to be told; the row height has to move with them or
+    /// larger text simply clips.
+    @objc private func chromeMetricsDidChange() {
+        emptyLabel.font = ChromeMetrics.font(11)
+        addButton.font = ChromeMetrics.font(11, weight: .medium)
+        outline.rowHeight = ChromeMetrics.length(42)
+        outline.indentationPerLevel = ChromeMetrics.length(12)
+        outline.enumerateAvailableRowViews { view, _ in
+            (view.view(atColumn: 0) as? SidebarCell)?.applyChromeMetrics()
+        }
+        refreshVisibleRows()
+    }
 
     func apply(_ model: SidebarModel) {
         let structureChanged = model.structure != self.model.structure
@@ -360,17 +385,20 @@ private final class SidebarCell: NSTableCellView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
     private let badge = BadgeView()
+    /// The metrics that move with the base font size, kept so a change can be
+    /// applied to a cell the outline view is recycling rather than rebuilding.
+    private var dotSize: [NSLayoutConstraint] = []
+    private var iconWidth: NSLayoutConstraint?
+    private var unread = false
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
 
-        titleLabel.font = .systemFont(ofSize: 12, weight: .medium)
         titleLabel.textColor = .labelColor
         titleLabel.lineBreakMode = .byTruncatingMiddle
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        subtitleLabel.font = .systemFont(ofSize: 10)
         subtitleLabel.textColor = .secondaryLabelColor
         // Tail, not head: a space's subtitle is its tabs in order, and the first
         // one is the one the user is most likely to want. Head truncation was
@@ -379,7 +407,6 @@ private final class SidebarCell: NSTableCellView {
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)
         icon.contentTintColor = .secondaryLabelColor
 
         spinner.style = .spinning
@@ -398,21 +425,41 @@ private final class SidebarCell: NSTableCellView {
         row.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
 
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: 10),
-            dot.heightAnchor.constraint(equalToConstant: 10),
-            icon.widthAnchor.constraint(equalToConstant: 14),
+        dotSize = [
+            dot.widthAnchor.constraint(equalToConstant: 0),
+            dot.heightAnchor.constraint(equalToConstant: 0),
+        ]
+        let iconWidth = icon.widthAnchor.constraint(equalToConstant: 0)
+        self.iconWidth = iconWidth
+        NSLayoutConstraint.activate(dotSize + [
+            iconWidth,
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
             row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        applyChromeMetrics()
     }
 
     required init?(coder: NSCoder) { nil }
 
+    /// Everything sized from the base font size, in one place, so a cell being
+    /// recycled and a cell being made take the same path.
+    func applyChromeMetrics() {
+        titleLabel.font = ChromeMetrics.font(12, weight: unread ? .semibold : .medium)
+        subtitleLabel.font = ChromeMetrics.font(10)
+        icon.symbolConfiguration = ChromeMetrics.symbol(11)
+        for constraint in dotSize { constraint.constant = ChromeMetrics.length(10) }
+        iconWidth?.constant = ChromeMetrics.length(14)
+        dot.invalidateIntrinsicContentSize()
+        badge.applyChromeMetrics()
+    }
+
     func configure(_ row: SidebarModel.Row) {
         titleLabel.stringValue = row.title
-        titleLabel.font = .systemFont(ofSize: 12, weight: row.unread ? .semibold : .medium)
+        // The weight says "unread", so the fonts are re-applied from here rather
+        // than only when the base size moves.
+        unread = row.unread
+        applyChromeMetrics()
         titleLabel.textColor = row.offline ? .secondaryLabelColor : .labelColor
         subtitleLabel.stringValue = row.subtitle
         subtitleLabel.isHidden = row.subtitle.isEmpty
@@ -447,7 +494,11 @@ private final class StatusDotView: NSView {
     private var status: AgentStatus = .unknown
     private var unread = false
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 10, height: 10) }
+    override var intrinsicContentSize: NSSize {
+        let side = ChromeMetrics.length(10)
+        return NSSize(width: side, height: side)
+    }
+
     override var wantsUpdateLayer: Bool { false }
 
     func update(status: AgentStatus, unread: Bool) {
@@ -458,7 +509,9 @@ private final class StatusDotView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let inset: CGFloat = unread ? 2.5 : 1.5
+        // Insets and line widths are fractions of the dot, not fixed points, so
+        // a dot that grows with the base font size still reads as a dot.
+        let inset = bounds.width * (unread ? 0.25 : 0.15)
         let core = bounds.insetBy(dx: inset, dy: inset)
         if status == .unknown {
             // Nothing to report: an outline keeps the column aligned without
@@ -472,8 +525,9 @@ private final class StatusDotView: NSView {
             NSBezierPath(ovalIn: core).fill()
         }
         guard unread else { return }
-        let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.75, dy: 0.75))
-        ring.lineWidth = 1.5
+        let width = max(bounds.width * 0.15, 1)
+        let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: width / 2, dy: width / 2))
+        ring.lineWidth = width
         StatusStyle.attentionColor(status).setStroke()
         ring.stroke()
     }
@@ -491,26 +545,34 @@ private final class BadgeView: NSView {
     }
 
     private let label = NSTextField(labelWithString: "")
+    private var height: NSLayoutConstraint?
 
     init() {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerCurve = .continuous
-        label.font = .systemFont(ofSize: 9, weight: .semibold)
         label.textColor = .secondaryLabelColor
         label.alignment = .center
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+        let height = heightAnchor.constraint(equalToConstant: 0)
+        self.height = height
         NSLayoutConstraint.activate([
             label.centerXAnchor.constraint(equalTo: centerXAnchor),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             widthAnchor.constraint(greaterThanOrEqualTo: label.widthAnchor, constant: 10),
-            heightAnchor.constraint(equalToConstant: 15),
+            height,
         ])
+        applyChromeMetrics()
         isHidden = true
     }
 
     required init?(coder: NSCoder) { nil }
+
+    func applyChromeMetrics() {
+        label.font = ChromeMetrics.font(9, weight: .semibold)
+        height?.constant = ChromeMetrics.length(15)
+    }
 
     override func layout() {
         super.layout()

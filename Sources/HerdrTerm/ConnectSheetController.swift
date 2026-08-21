@@ -57,10 +57,10 @@ final class ConnectSheetController: NSWindowController {
             "Same targets as `herdr --remote`; `local` attaches to a Herdr server on this Mac. "
             + "Remote hosts use BatchMode SSH, so the key must already be in ssh-agent."
         )
-        hint.font = .systemFont(ofSize: 11)
+        hint.font = ChromeMetrics.font(11)
         hint.textColor = .secondaryLabelColor
 
-        errorLabel.font = .systemFont(ofSize: 11)
+        errorLabel.font = ChromeMetrics.font(11)
         errorLabel.textColor = .systemRed
         errorLabel.maximumNumberOfLines = 4
         errorLabel.isHidden = true

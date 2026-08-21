@@ -18,7 +18,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var connectSheet: ConnectSheetController?
     private var numberKeyMonitor: Any?
 
-    convenience init(initialTarget: ConnectTarget? = nil) {
+    /// `restoringHosts` is the launch window's alone. A window opened with ⌘N
+    /// shows the same remembered hosts, but dialling them all again would give
+    /// every host a second SSH master and a second set of bridges for the same
+    /// panes — so a new window starts parked, the way it always has.
+    convenience init(initialTarget: ConnectTarget? = nil, restoringHosts: Bool = false) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -66,12 +70,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            // `--connect host` skips straight to the host; otherwise ask, unless
-            // there are remembered hosts to pick from in the sidebar.
+            // `--connect host` skips straight to the host. With nothing
+            // remembered there is nothing to show but the sheet; with hosts in
+            // the sidebar, the launch window puts back the ones that were
+            // attached last time and any others stay parked.
             if let initialTarget {
                 self.connections.connect(initialTarget)
             } else if self.connections.connections.isEmpty {
                 self.showConnectSheet()
+            } else if restoringHosts {
+                self.connections.restore()
             }
         }
     }
@@ -403,6 +411,19 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         confirmCloseTab(tabId)
     }
 
+    /// ⌘W: close what is in front of the user, ghostty's `close_surface`. In a
+    /// split that is the pane with the keyboard; in a tab that has only one
+    /// pane, closing the pane and closing the tab are the same act, and the tab
+    /// is the one worth confirming.
+    @objc func closePane(_ sender: Any?) {
+        guard let session = connections.selectedSession, let tabId = session.selectedTabId else { return }
+        guard let paneId = session.selectedPaneId, session.panes(inTab: tabId).count > 1 else {
+            confirmCloseTab(tabId)
+            return
+        }
+        confirmClosePane(paneId)
+    }
+
     @objc func newSpace(_ sender: Any?) {
         connections.selectedSession?.newSpace()
     }
@@ -465,6 +486,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    /// Closing a pane of a split kills whatever is running in it, so it asks on
+    /// the same rule a tab does — `confirm-close-surface`, which is the key this
+    /// case is actually named after. `unlessTrivial` is the interesting one: a
+    /// bare shell goes without a word, an agent gets asked about.
+    private func confirmClosePane(_ paneId: String) {
+        guard let session = connections.selectedSession, let window else { return }
+        let pane = session.snapshot?.pane(paneId)
+        let needsAsking: Bool
+        switch GhosttyRuntime.config.confirmClose {
+        case .never:
+            needsAsking = false
+        case .always:
+            needsAsking = true
+        case .unlessTrivial:
+            needsAsking = pane?.agentStatus != .unknown
+        }
+        guard needsAsking else {
+            session.closePane(paneId)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close this pane?"
+        alert.informativeText = "\(pane.map { session.title(ofPane: $0) } ?? "The pane") will be closed on "
+            + "\(session.target?.displayName ?? "the host")."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close Pane")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            session.closePane(paneId)
+        }
+    }
+
     private func confirmForget(_ connectionId: String) {
         guard let connection = connections.connection(id: connectionId), let window else { return }
         let alert = NSAlert()
@@ -488,7 +542,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return connections.selectedConnectionId != nil
         case #selector(newTab(_:)), #selector(newSpace(_:)):
             return session?.state.isConnected == true
-        case #selector(closeTab(_:)):
+        case #selector(closeTab(_:)), #selector(closePane(_:)):
             return session?.selectedTabId != nil
         case #selector(splitRight), #selector(splitDown),
              #selector(focusPaneLeft), #selector(focusPaneRight),

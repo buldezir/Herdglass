@@ -29,6 +29,8 @@ final class TabBarView: NSView {
     var onClose: ((String) -> Void)?
     var onNew: (() -> Void)?
 
+    /// The strip's own height before the base font size scales it; `length`
+    /// makes it the real one.
     static let height: CGFloat = 32
 
     private let scroll = NSScrollView()
@@ -37,6 +39,8 @@ final class TabBarView: NSView {
     private let separator = NSBox()
     private var model = TabBarModel()
     private var items: [String: TabItemView] = [:]
+    private var heightConstraint: NSLayoutConstraint?
+    private var newButtonWidth: NSLayoutConstraint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -73,15 +77,19 @@ final class TabBarView: NSView {
         addSubview(newButton)
         addSubview(separator)
 
+        let heightConstraint = heightAnchor.constraint(equalToConstant: 0)
+        let newButtonWidth = newButton.widthAnchor.constraint(equalToConstant: 0)
+        self.heightConstraint = heightConstraint
+        self.newButtonWidth = newButtonWidth
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: Self.height),
+            heightConstraint,
+            newButtonWidth,
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.bottomAnchor.constraint(equalTo: separator.topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: newButton.leadingAnchor, constant: -4),
             newButton.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
             newButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            newButton.widthAnchor.constraint(equalToConstant: 22),
             separator.leadingAnchor.constraint(equalTo: leadingAnchor),
             separator.trailingAnchor.constraint(equalTo: trailingAnchor),
             separator.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -90,9 +98,34 @@ final class TabBarView: NSView {
             stack.heightAnchor.constraint(equalTo: scroll.contentView.heightAnchor),
             stack.widthAnchor.constraint(greaterThanOrEqualTo: scroll.contentView.widthAnchor),
         ])
+        applyChromeMetrics()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(chromeMetricsDidChange),
+            name: ChromeMetrics.didChangeNotification,
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func applyChromeMetrics() {
+        heightConstraint?.constant = ChromeMetrics.length(Self.height)
+        newButtonWidth?.constant = ChromeMetrics.length(22)
+        newButton.symbolConfiguration = ChromeMetrics.symbol(12, weight: .medium)
+    }
+
+    /// A new base font size: the strip, the `+`, and every tab in it.
+    @objc private func chromeMetricsDidChange() {
+        applyChromeMetrics()
+        for view in items.values { view.applyChromeMetrics() }
+        invalidateIntrinsicContentSize()
+    }
 
     func apply(_ model: TabBarModel) {
         let structureChanged = model.structure != self.model.structure
@@ -143,7 +176,13 @@ private final class TabItemView: NSView {
     private let close = NSButton()
     private var isSelected = false
     private var isHovering = false
+    private var isUnread = false
     private var tracking: NSTrackingArea?
+    /// The metrics that follow the base font size. A tab is a fixed size on
+    /// purpose — see `width` — so every one of them is a constraint to move.
+    private var dotSize: [NSLayoutConstraint] = []
+    private var closeSize: [NSLayoutConstraint] = []
+    private var box: [NSLayoutConstraint] = []
 
     init() {
         super.init(frame: .zero)
@@ -151,15 +190,12 @@ private final class TabItemView: NSView {
         layer?.cornerCurve = .continuous
         layer?.cornerRadius = 5
 
-        label.font = .systemFont(ofSize: 11, weight: .medium)
         label.lineBreakMode = .byTruncatingTail
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        paneCount.font = .systemFont(ofSize: 9, weight: .semibold)
         paneCount.textColor = .tertiaryLabelColor
 
         close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close tab")
-        close.symbolConfiguration = .init(pointSize: 8, weight: .semibold)
         close.bezelStyle = .inline
         close.isBordered = false
         close.contentTintColor = .secondaryLabelColor
@@ -189,19 +225,26 @@ private final class TabItemView: NSView {
         addSubview(row)
         addSubview(close)
 
-        NSLayoutConstraint.activate([
-            dot.widthAnchor.constraint(equalToConstant: 8),
-            dot.heightAnchor.constraint(equalToConstant: 8),
+        dotSize = [
+            dot.widthAnchor.constraint(equalToConstant: 0),
+            dot.heightAnchor.constraint(equalToConstant: 0),
+        ]
+        closeSize = [
+            close.widthAnchor.constraint(equalToConstant: 0),
+            close.heightAnchor.constraint(equalToConstant: 0),
+        ]
+        box = [
+            heightAnchor.constraint(equalToConstant: 0),
+            widthAnchor.constraint(equalToConstant: 0),
+        ]
+        NSLayoutConstraint.activate(dotSize + closeSize + box + [
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             row.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -4),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
-            close.widthAnchor.constraint(equalToConstant: 12),
-            close.heightAnchor.constraint(equalToConstant: 12),
             close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
             close.centerYAnchor.constraint(equalTo: centerYAnchor),
-            heightAnchor.constraint(equalToConstant: 24),
-            widthAnchor.constraint(equalToConstant: Self.width),
         ])
+        applyChromeMetrics()
     }
 
     /// One width for every tab, so the strip only ever moves when a tab is
@@ -218,9 +261,26 @@ private final class TabItemView: NSView {
 
     required init?(coder: NSCoder) { nil }
 
+    /// Everything the base font size moves. The width goes with it: the number
+    /// above was measured against 11pt medium text, so a tab drawn at twice that
+    /// and left 172pt wide would fit four characters.
+    func applyChromeMetrics() {
+        label.font = ChromeMetrics.font(11, weight: isUnread ? .semibold : .medium)
+        paneCount.font = ChromeMetrics.font(9, weight: .semibold)
+        close.symbolConfiguration = ChromeMetrics.symbol(8, weight: .semibold)
+        for constraint in dotSize { constraint.constant = ChromeMetrics.length(8) }
+        for constraint in closeSize { constraint.constant = ChromeMetrics.length(12) }
+        box[0].constant = ChromeMetrics.length(24)
+        box[1].constant = ChromeMetrics.length(Self.width)
+        dot.invalidateIntrinsicContentSize()
+    }
+
     func configure(_ item: TabBarModel.Item) {
         label.stringValue = item.title
-        label.font = .systemFont(ofSize: 11, weight: item.unread ? .semibold : .medium)
+        // The weight says "unread", so the fonts are re-applied from here rather
+        // than only when the base size moves.
+        isUnread = item.unread
+        applyChromeMetrics()
         label.textColor = item.selected ? .labelColor : .secondaryLabelColor
         paneCount.stringValue = item.paneCount > 1 ? "\(item.paneCount)" : ""
         paneCount.isHidden = item.paneCount <= 1
@@ -286,7 +346,10 @@ private final class TabStatusDot: NSView {
     private var status: AgentStatus = .unknown
     private var unread = false
 
-    override var intrinsicContentSize: NSSize { NSSize(width: 8, height: 8) }
+    override var intrinsicContentSize: NSSize {
+        let side = ChromeMetrics.length(8)
+        return NSSize(width: side, height: side)
+    }
 
     func update(status: AgentStatus, unread: Bool) {
         guard status != self.status || unread != self.unread else { return }
@@ -296,7 +359,8 @@ private final class TabStatusDot: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        let core = bounds.insetBy(dx: unread ? 2 : 1, dy: unread ? 2 : 1)
+        let inset = bounds.width * (unread ? 0.25 : 0.125)
+        let core = bounds.insetBy(dx: inset, dy: inset)
         if status == .unknown {
             let outline = NSBezierPath(ovalIn: core.insetBy(dx: 0.5, dy: 0.5))
             outline.lineWidth = 1
@@ -307,8 +371,9 @@ private final class TabStatusDot: NSView {
             NSBezierPath(ovalIn: core).fill()
         }
         guard unread else { return }
-        let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5))
-        ring.lineWidth = 1.25
+        let width = max(bounds.width * 0.15, 1)
+        let ring = NSBezierPath(ovalIn: bounds.insetBy(dx: width / 2, dy: width / 2))
+        ring.lineWidth = width
         StatusStyle.attentionColor(status).setStroke()
         ring.stroke()
     }

@@ -88,13 +88,15 @@ struct GhosttyConfig {
     enum Action: String, CaseIterable {
         case newWindow = "new_window"
         case newTab = "new_tab"
-        /// The GUI has no close-one-pane command — a tab is what the user closes
-        /// — so Close Tab follows `close_surface`, ghostty's "close what is in
-        /// front of me", rather than `close_tab`. That also keeps ⌘W on Close
-        /// Tab, which is where every tabbed app puts it, instead of moving it to
-        /// ghostty's ⌥⌘W.
+        /// `close_surface` is ghostty's "close what is in front of me", and it
+        /// is the app's Close: the focused pane when the tab is split, the tab
+        /// itself when it is not. `close_tab` closes the whole tab either way,
+        /// which is why both exist here and why ⌘W lands on the first of them,
+        /// exactly as it does in ghostty.
         case closeSurface = "close_surface"
+        case closeTab = "close_tab"
         case closeWindow = "close_window"
+        case closeAllWindows = "close_all_windows"
         case quit
         case reloadConfig = "reload_config"
         case openConfig = "open_config"

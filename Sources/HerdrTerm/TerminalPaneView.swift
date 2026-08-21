@@ -354,20 +354,38 @@ private final class PlaceholderView: NSStackView {
         alignment = .centerX
         spacing = 8
 
-        icon.symbolConfiguration = .init(pointSize: 26, weight: .regular)
-
-        title.font = .systemFont(ofSize: 13, weight: .medium)
         title.alignment = .center
 
-        detail.font = .systemFont(ofSize: 11)
         detail.alignment = .center
         detail.maximumNumberOfLines = 4
 
         setViews([icon, title, detail], in: .leading)
         setCustomSpacing(4, after: title)
+        applyChromeMetrics()
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applyChromeMetrics),
+            name: ChromeMetrics.didChangeNotification,
+            object: nil
+        )
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// A placeholder is the only chrome in the terminal area, so it follows the
+    /// base font size like the rest of it — and it can be on screen for as long
+    /// as a host stays unreachable, which is why it listens rather than reading
+    /// the size once.
+    @objc private func applyChromeMetrics() {
+        icon.symbolConfiguration = ChromeMetrics.symbol(26)
+        title.font = ChromeMetrics.font(13, weight: .medium)
+        detail.font = ChromeMetrics.font(11)
+    }
 
     /// Placeholders sit on the terminal background, so they take their contrast
     /// from ghostty's `foreground` rather than from the label colours — those

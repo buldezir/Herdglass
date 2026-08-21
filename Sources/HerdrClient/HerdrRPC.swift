@@ -110,6 +110,14 @@ public final class HerdrRPC: @unchecked Sendable {
         _ = try request(method: "tab.close", params: ["tab_id": tabId])
     }
 
+    /// Close one pane of a split. Herdr re-lays the tab out around what is left,
+    /// and closes the tab itself when this was its last pane — the GUI never
+    /// has to work out which of the two happened, because the next snapshot
+    /// says.
+    public func closePane(_ paneId: String) throws {
+        _ = try request(method: "pane.close", params: ["pane_id": paneId])
+    }
+
     @discardableResult
     public func createWorkspace() throws -> WorkspaceInfo {
         let result = try request(method: "workspace.create", params: ["focus": true])

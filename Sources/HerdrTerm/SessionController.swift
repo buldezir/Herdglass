@@ -90,6 +90,12 @@ final class SessionController {
     /// intention is held until a snapshot actually carries the tab.
     private var pendingTabId: String?
 
+    /// A pane this client has just asked the server for and means to land on:
+    /// the far side of a split. Held for the same reason as `pendingTabId` — the
+    /// pane does not exist in any snapshot yet, and the refresh that follows the
+    /// split is not necessarily the next one to land.
+    private var pendingPaneId: String?
+
     private var attentionOrder: [String] = []
     /// What each unread pane was last notified about. Herdr's own detection
     /// flaps — a pane can read `blocked`, `working`, `blocked` again inside a
@@ -215,6 +221,8 @@ final class SessionController {
         selectedWorkspaceId = nil
         selectedTabId = nil
         selectedPaneId = nil
+        pendingTabId = nil
+        pendingPaneId = nil
         socketPath = nil
         layoutTrees = [:]
         layoutFetches = []
@@ -262,6 +270,7 @@ final class SessionController {
         // instead — a tab created a second ago must not yank the user off a row
         // they have since picked themselves.
         pendingTabId = nil
+        pendingPaneId = nil
         selectedWorkspaceId = workspaceId
         if let tab = preferredTab(in: workspaceId, snapshot: snapshot) {
             selectTab(tab.tabId)
@@ -298,6 +307,7 @@ final class SessionController {
         // instead — a tab created a second ago must not yank the user off a row
         // they have since picked themselves.
         pendingTabId = nil
+        pendingPaneId = nil
         selectedWorkspaceId = tab.workspaceId
         selectedTabId = tabId
         if let pane = preferredPane(in: tabId, snapshot: snapshot) {
@@ -318,6 +328,7 @@ final class SessionController {
         // instead — a tab created a second ago must not yank the user off a row
         // they have since picked themselves.
         pendingTabId = nil
+        pendingPaneId = nil
         selectedTabId = pane.tabId
         selectedWorkspaceId = pane.workspaceId
         selectedPaneId = paneId
@@ -337,9 +348,20 @@ final class SessionController {
 
     // MARK: - Actions on the server
 
+    /// Split, and land on the pane that appears — which is what `focus: true`
+    /// asks the server for, and what ghostty does with its own splits.
+    ///
+    /// Without adopting the id, `settleSelection` keeps the selection on the pane
+    /// that was split (it still exists), so the new pane opened *beside* the
+    /// accent border and the keyboard: the border said one pane, the split the
+    /// user had just asked for was the other, and nothing was typing into
+    /// either.
     func splitSelectedPane(_ direction: SplitDirection) {
         guard let paneId = selectedPaneId, let rpc else { return }
-        perform { _ = try rpc.splitPane(paneId, direction: direction, focus: true) }
+        perform({ try rpc.splitPane(paneId, direction: direction, focus: true).paneId }) { session, newPaneId in
+            session.pendingPaneId = newPaneId
+            session.applyPendingPaneSelection()
+        }
     }
 
     /// Herdr decides which pane lies in a direction — it owns the geometry.
@@ -367,9 +389,26 @@ final class SessionController {
         selectTab(tabId)
     }
 
+    /// Same, for the far side of a split.
+    private func applyPendingPaneSelection() {
+        guard let paneId = pendingPaneId else { return }
+        guard snapshot?.pane(paneId) != nil else { return }
+        pendingPaneId = nil
+        selectPane(paneId)
+    }
+
     func closeTab(_ tabId: String) {
         guard let rpc else { return }
         perform { try rpc.closeTab(tabId) }
+    }
+
+    /// Close one pane of a split. Nothing here has to move the selection or the
+    /// split tree: the pane leaves the next snapshot, `settleSelection` picks up
+    /// whatever Herdr focused instead, and the tree is refetched because its
+    /// signature moved.
+    func closePane(_ paneId: String) {
+        guard let rpc else { return }
+        perform { try rpc.closePane(paneId) }
     }
 
     func newSpace() {
@@ -542,6 +581,11 @@ final class SessionController {
         socketPath = connection.localSocketPath
         state = .connected(connection.target.displayName)
         RecentsStore.remember(connection.target)
+        // Attached now, so attached at the next launch: the list of hosts to
+        // dial again is written when a host comes up, never when it goes down —
+        // quitting the app closes every session, and clearing the flag there
+        // would forget exactly what it is for.
+        RecentsStore.markAttached(connection.target)
         applySnapshot(snapshot, isInitial: true)
         startEventWatch(rpc)
         delegate?.sessionDidUpdate(self)
@@ -672,6 +716,7 @@ final class SessionController {
         layoutPrefetches = layoutPrefetches.filter { liveTabs.contains($0.key) }
 
         applyPendingTabSelection()
+        applyPendingPaneSelection()
         refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
     }

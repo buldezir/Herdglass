@@ -71,6 +71,25 @@ final class SplitContainerView: NSView {
         activePaneView?.focusTerminal()
     }
 
+    /// Put the keyboard back in the active pane when whatever held it has gone.
+    ///
+    /// Every structural change takes the first responder with it: `rebuild`
+    /// unparents each pane view to re-nest it, and a closed pane or tab tears its
+    /// view down outright. AppKit answers both by making the *window* the first
+    /// responder, which is nowhere — so opening a split, closing a split and
+    /// closing a tab all left the accent border pointing at a pane that could not
+    /// receive a keystroke.
+    ///
+    /// It only ever fills a vacancy. Anything that is still a real view in a
+    /// window keeps the keyboard — the pane the user clicked, or the sidebar they
+    /// are arrow-keying through, because taking it back is exactly how "arrow
+    /// keys browse the sidebar without stealing focus" breaks.
+    private func restoreFocusIfLost() {
+        guard let window, window.attachedSheet == nil else { return }
+        if let responder = window.firstResponder as? NSView, responder.window != nil { return }
+        focusActivePane()
+    }
+
     func allowReattach() {
         for view in paneViews.values { view.allowReattach() }
         placeholder.allowReattach()
@@ -91,6 +110,7 @@ final class SplitContainerView: NSView {
 
     func apply(_ model: Model) {
         let previousSessionKey = self.model.sessionKey
+        let previousActivePaneId = self.model.activePaneId
         self.model = model
         guard let tree = model.tree, !tree.paneIds.isEmpty else {
             return
@@ -115,7 +135,8 @@ final class SplitContainerView: NSView {
         }
         evictWarmPanes(live: liveIds)
 
-        if tree.structureSignature != structureSignature {
+        let rebuilt = tree.structureSignature != structureSignature
+        if rebuilt {
             rebuild(tree)
             structureSignature = tree.structureSignature
         }
@@ -123,6 +144,13 @@ final class SplitContainerView: NSView {
         applyRatios(tree, path: [])
         decorate(live: live)
         attachPanes(live: live)
+        // Only on a structural change or a move, never on the two-second poll:
+        // a vacancy is something these create, and re-checking on every snapshot
+        // would pull the keyboard out of the chrome a second after the user put
+        // it there.
+        if rebuilt || previousActivePaneId != model.activePaneId {
+            restoreFocusIfLost()
+        }
     }
 
     /// Warm panes are not free, so they are bounded twice over: a pane the

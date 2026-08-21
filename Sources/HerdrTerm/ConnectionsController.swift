@@ -41,7 +41,8 @@ final class ConnectionsController: SessionControllerDelegate {
     private(set) var selectedConnectionId: String?
 
     /// Hosts the user has used before, so the sidebar has something to show
-    /// before anything is connected. Nothing is dialled until it is selected.
+    /// before anything is connected. Nothing is dialled here — a row is dialled
+    /// when it is selected, or by `restore()` at launch.
     init(remembering recents: [ConnectTarget] = RecentsStore.load()) {
         for target in recents {
             connections.append(makeConnection(target))
@@ -114,9 +115,33 @@ final class ConnectionsController: SessionControllerDelegate {
         }
     }
 
+    /// Detach a host because the user asked. That is also what takes it off the
+    /// list of hosts the next launch dials — `disconnectAll` deliberately does
+    /// not, because a window closing is not the user saying "leave this one
+    /// alone".
     func disconnect(_ id: String) {
         guard let connection = connection(id: id) else { return }
         connection.session.disconnect()
+        RecentsStore.markDetached(connection.target)
+        delegate?.connectionsDidChange(self)
+    }
+
+    /// Dial the hosts that were attached when the app was last running, and land
+    /// on one of them, so a restart comes back to the sessions it left rather
+    /// than to a sidebar of dimmed rows.
+    ///
+    /// Every dial carries a completion, empty on purpose: a host that has gone
+    /// away since is reported by its own sidebar row going to `failed`, and a
+    /// restore of four hosts must not open four modal sheets over a window the
+    /// user has not touched yet.
+    func restore() {
+        let restoring = RecentsStore.attached()
+        let rows = connections.filter { restoring.contains($0.target) }
+        guard let first = rows.first else { return }
+        for row in rows where !row.isAttached {
+            row.session.connect(row.target) { _ in }
+        }
+        if selectedConnectionId == nil { select(first.id, dial: false) }
         delegate?.connectionsDidChange(self)
     }
 

@@ -24,7 +24,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         RemoteConnection.pruneStaleWorkDirs()
         AgentNotifications.prepare(delegate: self)
-        openWindow(target: initialTarget)
+        // Only this window restores: the hosts that were attached when the app
+        // was last running come back with it.
+        openWindow(target: initialTarget, restoringHosts: initialTarget == nil)
     }
 
     /// The app-wide half of the ghostty config: the appearance `window-theme`
@@ -56,8 +58,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openWindow(target: nil)
     }
 
-    private func openWindow(target: ConnectTarget?) {
-        let controller = MainWindowController(initialTarget: target)
+    /// `performClose` on a copy of the list: each window drops itself out of
+    /// `windows` from `windowWillClose`, which is a mutation of the array being
+    /// walked.
+    @objc func closeAllWindows(_ sender: Any?) {
+        for controller in windows {
+            controller.window?.performClose(sender)
+        }
+    }
+
+    private func openWindow(target: ConnectTarget?, restoringHosts: Bool = false) {
+        let controller = MainWindowController(initialTarget: target, restoringHosts: restoringHosts)
         controller.onClose = { [weak self] closed in
             self?.windows.removeAll { $0 === closed }
         }
@@ -185,10 +196,19 @@ enum MainMenu {
         menu.addItem(withTitle: "Reconnect", action: #selector(MainWindowController.reconnect), keyEquivalent: "r")
         menu.addItem(withTitle: "Disconnect", action: #selector(MainWindowController.disconnect), keyEquivalent: "")
         menu.addItem(.separator())
-        // ⌘W closes the tab, the way it does in every other tabbed app; the
-        // window needs the shift.
-        menu.addItem(withTitle: "Close Tab", action: #selector(MainWindowController.closeTab(_:)), keyEquivalent: "w")
+        // The same four closes ghostty has, in the same order and on the same
+        // keys. ⌘W is Close, which is the pane when the tab is split and the tab
+        // when it is not — closing a whole split with one keystroke is not
+        // something the user can ask for by accident.
+        menu.addItem(withTitle: "Close", action: #selector(MainWindowController.closePane(_:)), keyEquivalent: "w")
             .ghostty(.closeSurface)
+        let closeTab = menu.addItem(
+            withTitle: "Close Tab",
+            action: #selector(MainWindowController.closeTab(_:)),
+            keyEquivalent: "w"
+        )
+        closeTab.keyEquivalentModifierMask = [.command, .option]
+        closeTab.ghostty(.closeTab)
         let closeWindow = menu.addItem(
             withTitle: "Close Window",
             action: #selector(NSWindow.performClose(_:)),
@@ -196,6 +216,13 @@ enum MainMenu {
         )
         closeWindow.keyEquivalentModifierMask = [.command, .shift]
         closeWindow.ghostty(.closeWindow)
+        let closeAll = menu.addItem(
+            withTitle: "Close All Windows",
+            action: #selector(AppDelegate.closeAllWindows(_:)),
+            keyEquivalent: "w"
+        )
+        closeAll.keyEquivalentModifierMask = [.command, .option, .shift]
+        closeAll.ghostty(.closeAllWindows)
         return menu
     }
 

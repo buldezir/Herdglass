@@ -156,10 +156,24 @@ private func terminalHostAction(
     _ action: ghostty_action_s
 ) -> Bool {
     guard let app, let host = terminalHost(from: ghostty_app_userdata(app)) else { return false }
+    // The surface's session is resolved *here*, not inside the hop, and the
+    // strong reference that produces is what keeps it alive until the action is
+    // handled — the same shape as `terminalHostCloseSurface`.
+    //
+    // Resolving it inside the `Task` instead is a use-after-free, and closing a
+    // tab is how you hit it: libghostty queues an action for a surface, the tab
+    // closes, `TerminalSession.deinit` frees the surface, and the hop then runs
+    // `Unmanaged.takeUnretainedValue()` on a session that is already gone and
+    // writes to its `state`. `EXC_BAD_ACCESS` at a small address, in
+    // `TerminalSession.handle`, one `surface closed` line later in libghostty's
+    // log — intermittent, because it needs an action already in flight.
+    let session = target.tag == GHOSTTY_TARGET_SURFACE
+        ? terminalSession(for: target.target.surface)
+        : nil
     Task { @MainActor in
         switch target.tag {
         case GHOSTTY_TARGET_SURFACE:
-            terminalSession(for: target.target.surface)?.handle(action)
+            session?.handle(action)
         case GHOSTTY_TARGET_APP:
             host.handle(action)
         default:

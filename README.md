@@ -129,6 +129,28 @@ This is Herdr's own notion of a notification — what `[ui.toast] delivery` in
 `config.toml` delivers as a TUI toast — taken by the client that has an OS to
 hand it to. Turn it off in **herdr-term → Settings…**.
 
+## Settings
+
+Two things, because they are the two that neither ghostty nor Herdr can state:
+
+- **Interface text size** — how big this app draws its own chrome: the sidebar,
+  the tab strip, the labels around a terminal. The terminal's font is still
+  `font-size` in your ghostty config. Every step applies at once, everywhere.
+- **Notifications** — the switch described above.
+
+Anything that describes a *terminal* belongs in the ghostty config, and anything
+that describes a *pane* belongs to the Herdr server.
+
+## Hosts come back
+
+The hosts that were attached when you last quit are dialled again at launch, in
+the window that opens with the app — so a restart comes back to the sessions it
+left rather than to a sidebar of dimmed rows. A host leaves that list when you
+detach it yourself (**Disconnect**, or **Remove Host**); closing the window and
+quitting do not count, which is the whole point. Every other remembered host
+stays parked until you pick it, and a ⌘N window starts parked too rather than
+opening a second SSH master per host.
+
 ## Your ghostty config
 
 The terminal is libghostty, so it already reads `~/.config/ghostty/config` (or
@@ -150,7 +172,7 @@ app by configuring ghostty:
 | `window-save-state` | `never` stops the window remembering its position |
 | `confirm-close-surface` | `false` never asks before closing a tab, `always` always does |
 | `focus-follows-mouse` | Hovering a pane of a split moves the keyboard into it |
-| `keybind` | Moves this app's menu shortcuts. `new_tab`, `new_window`, `close_surface`, `close_window`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `goto_tab:1`…`9`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
+| `keybind` | Moves this app's menu shortcuts. `new_tab`, `new_window`, `close_surface`, `close_tab`, `close_window`, `close_all_windows`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `goto_tab:1`…`9`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
 
 To see exactly what arrived:
 
@@ -176,7 +198,8 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌘R` | Reconnect the selected host |
 | `⌘N` | New window |
 | `⌘T` | New tab in the selected space |
-| `⌘W` | Close tab (`⇧⌘W` closes the window) |
+| `⌘W` | Close: the pane, in a split; the tab, when the tab has one pane |
+| `⌥⌘W` | Close tab, split or not (`⇧⌘W` the window, `⌥⇧⌘W` all of them) |
 | `⌘D` / `⇧⌘D` | Split the active pane right / down |
 | `⌘⌥←↑↓→` | Move the keyboard to the pane in that direction |
 | `⌘1`…`⌘9` | Tab with that number, in the selected space |
@@ -193,7 +216,11 @@ and takes `⌘,` only if your ghostty config points `open_config` somewhere else
 
 Clicking a pane moves the keyboard into it — that is also how the active pane of a split changes, and Herdr is told about it. Arrow keys browse the sidebar without stealing focus. The sidebar is draggable between 180 and 460 pt and its width is remembered.
 
-Closing a tab asks first when it holds more than a bare shell, because `tab.close` closes its panes on the server — `confirm-close-surface` in your ghostty config changes that to never or always.
+⌘W closes what is in front of you, the way ghostty's `close_surface` does: the
+focused pane when the tab is split, and the tab itself when it is not. ⌥⌘W closes
+the whole tab either way. Both ask first when there is more than a bare shell to
+lose, because `pane.close` and `tab.close` really do close panes on the server —
+`confirm-close-surface` in your ghostty config changes that to never or always.
 
 Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becomes a `terminal.scroll` on the server, which then sends the frame for the new viewport.
 
