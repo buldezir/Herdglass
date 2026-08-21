@@ -210,9 +210,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     // MARK: - Menu actions
 
     @objc func copy(_ sender: Any?) {
-        guard let text = session.copySelection(), !text.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
+        session.copySelection()
     }
 
     @objc func paste(_ sender: Any?) {

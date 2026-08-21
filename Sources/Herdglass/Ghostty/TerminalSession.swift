@@ -182,12 +182,14 @@ final class TerminalSession {
         ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, translateScrollModifiers(event))
     }
 
-    func copySelection() -> String? {
-        guard let surface else { return nil }
-        var text = ghostty_text_s()
-        guard ghostty_surface_read_selection(surface, &text) else { return nil }
-        defer { ghostty_surface_free_text(surface, &text) }
-        return String(cString: text.text)
+    /// Copies the selection with libghostty's own action rather than reading
+    /// the cells back ourselves: only the action honours
+    /// `clipboard-trim-trailing-spaces`, so only the action leaves behind the
+    /// blank cells padding each row out to the pane's width. It writes the
+    /// clipboard through `TerminalHost`'s write-clipboard callback.
+    @discardableResult
+    func copySelection() -> Bool {
+        perform(action: "copy_to_clipboard:plain")
     }
 
     func hasSelection() -> Bool {
