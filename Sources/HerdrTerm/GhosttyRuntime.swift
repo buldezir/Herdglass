@@ -19,10 +19,56 @@ enum GhosttyRuntime {
     /// `GhosttyTerminalHost.shared`: that convenience injects a theme of its own
     /// (see `loadedConfig`), and `ghostty_init` must not run twice.
     private static let terminalHost: GhosttyTerminalHost? = {
+        exportResourcesDir()
         guard let host = try? GhosttyTerminalHost(loadDefaultTheme: false) else { return nil }
         loadConfig(into: host)
         return host
     }()
+
+    /// `theme = <name>` is resolved against `<resources>/themes`, and libghostty
+    /// finds `<resources>` from `GHOSTTY_RESOURCES_DIR`, or by climbing from its
+    /// own executable to a bundle that ships ghostty's terminfo. This app is
+    /// neither, so a named theme only resolves when the variable already happens
+    /// to be in the environment — which is to say when the app was launched from
+    /// a shell inside Ghostty, since ghostty exports it to every shell it
+    /// spawns, and not when it was launched from Finder or the Dock.
+    ///
+    /// The difference is silent: an unresolved theme lands in the config's
+    /// diagnostics, every other key is read as usual, and the terminal comes up
+    /// in ghostty's own default palette — duller than most themes, which is what
+    /// "the colours look washed out when I double-click it" is.
+    ///
+    /// So point the variable at the user's Ghostty install before libghostty
+    /// loads anything, and both launches read the same themes. Nothing is
+    /// exported when Ghostty is not installed: without a themes directory there
+    /// is no theme to find, and an empty value would only stop libghostty from
+    /// looking anywhere else.
+    private static func exportResourcesDir() {
+        func hasThemes(_ resources: String) -> Bool {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(
+                atPath: resources + "/themes",
+                isDirectory: &isDirectory
+            )
+            return exists && isDirectory.boolValue
+        }
+
+        if let current = ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"], hasThemes(current) {
+            return
+        }
+        // LaunchServices first, so a Ghostty kept outside /Applications counts.
+        let bundles: [String?] = [
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.mitchellh.ghostty")?.path,
+            "/Applications/Ghostty.app",
+            ("~/Applications/Ghostty.app" as NSString).expandingTildeInPath,
+        ]
+        for bundle in bundles.compactMap(\.self) {
+            let resources = bundle + "/Contents/Resources/ghostty"
+            guard hasThemes(resources) else { continue }
+            setenv("GHOSTTY_RESOURCES_DIR", resources, 1)
+            return
+        }
+    }
 
     /// The config libghostty is running with. Freed only after its replacement
     /// has been handed to the app, because `ghostty_app_update_config` clones.

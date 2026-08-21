@@ -443,6 +443,14 @@ extension GhosttyConfig {
         lines.append("behaviour")
         row("confirm-close-surface", confirmClose.rawValue)
         row("focus-follows-mouse", "\(focusFollowsMouse)")
+        lines.append("ghostty install")
+        // Not a config key: where a named `theme` is looked up, which is the one
+        // thing that changes with how the app was launched.
+        row(
+            "resources",
+            ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]
+                ?? "(no Ghostty install found — a named theme cannot resolve)"
+        )
         lines.append("keybind")
         for action in Action.allCases {
             row(action.rawValue, shortcut(action)?.display ?? "(unbound here)")
