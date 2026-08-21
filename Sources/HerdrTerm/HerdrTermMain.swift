@@ -37,6 +37,31 @@ enum HerdrTermMain {
             return
         }
 
+        // One instance, and it is the one already on screen.
+        //
+        // The Finder refuses a second launch of a bundle on its own, but
+        // `open -n` and the binary run straight out of `.build` — which is how
+        // this app is started every time it is worked on — do not. Two
+        // instances is not a cosmetic problem: both restore the same attached
+        // hosts, so every host ends up with two SSH masters and two sets of
+        // bridges for the same panes, and the two disagree about what Herdr
+        // last said.
+        //
+        // The `--bridge` children exec this same binary and have returned long
+        // before this line. They never build an `NSApplication`, so
+        // LaunchServices does not register them and they can never be mistaken
+        // for a second app.
+        if let running = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "dev.herdr.term")
+            .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
+            running.activate()
+            let ignored = options.target.map { " Ignoring --connect \($0.displayName)." } ?? ""
+            FileHandle.standardError.write(Data(
+                "herdr-term is already running (pid \(running.processIdentifier)); brought it to the front.\(ignored)\n".utf8
+            ))
+            return
+        }
+
         let app = NSApplication.shared
         let delegate = AppDelegate(initialTarget: options.target)
         app.delegate = delegate

@@ -90,11 +90,13 @@ public final class HerdrRPC: @unchecked Sendable {
 
     /// Herdr owns which pane a direction leads to, splits and all; asking it
     /// avoids the GUI having a second opinion about its own geometry.
-    public func focusPane(from paneId: String, direction: PaneDirection) throws {
-        _ = try request(
+    @discardableResult
+    public func focusPane(from paneId: String, direction: PaneDirection) throws -> PaneFocus {
+        let result = try request(
             method: "pane.focus_direction",
             params: ["pane_id": paneId, "direction": direction.rawValue]
         )
+        return try decode(PaneFocus.self, from: result, key: "focus", expecting: "pane_focus_direction")
     }
 
     @discardableResult

@@ -85,8 +85,10 @@ struct GhosttyConfig {
     /// spells them, so a rebind in the user's config moves our menu item too.
     /// Anything ghostty can do that Herdr owns instead (zoom, resize_split,
     /// font size, the command palette) is deliberately absent.
+    /// `new_window` and `close_all_windows` are deliberately absent: this app
+    /// has one window and no way to make a second, so a keybind for either has
+    /// nothing here to move.
     enum Action: String, CaseIterable {
-        case newWindow = "new_window"
         case newTab = "new_tab"
         /// `close_surface` is ghostty's "close what is in front of me", and it
         /// is the app's Close: the focused pane when the tab is split, the tab
@@ -96,7 +98,6 @@ struct GhosttyConfig {
         case closeSurface = "close_surface"
         case closeTab = "close_tab"
         case closeWindow = "close_window"
-        case closeAllWindows = "close_all_windows"
         case quit
         case reloadConfig = "reload_config"
         case openConfig = "open_config"
@@ -152,10 +153,33 @@ struct GhosttyConfig {
     var hasLightDarkTheme = false
     private var shortcuts: [Action: Shortcut] = [:]
 
-    /// The key equivalent the user's config gives this action, if any.
+    /// The key equivalent the config gives this action, if any — the user's
+    /// `keybind` when they wrote one, ghostty's own default otherwise.
     func shortcut(_ action: Action) -> Shortcut? {
         shortcuts[action]
     }
+
+    /// Whether the config moved this action off the key ghostty ships it on.
+    ///
+    /// `ghostty_config_trigger` answers from the merged config and cannot say
+    /// where a trigger came from, so this asks a second config that has none of
+    /// the user's files loaded and compares. It is what lets a default of this
+    /// app's own outrank a ghostty *default* while still stepping aside for a
+    /// `keybind` the user actually wrote (see `NSMenu.applyGhosttyShortcuts`).
+    func isRebound(_ action: Action) -> Bool {
+        shortcuts[action] != Self.stockShortcuts[action]
+    }
+
+    /// Ghostty's own keybind defaults: `ghostty_config_new` with nothing loaded
+    /// on top of it. Built once — the defaults cannot change under a reload.
+    private static let stockShortcuts: [Action: Shortcut] = {
+        guard let config = ghostty_config_new() else { return [:] }
+        defer { ghostty_config_free(config) }
+        ghostty_config_finalize(config)
+        return Action.allCases.reduce(into: [:]) { stock, action in
+            stock[action] = shortcut(config, action.rawValue)
+        }
+    }()
 
     /// `goto_tab:1`…`goto_tab:9`, keyed by shortcut, so the ⌘1…⌘9 monitor can
     /// look an event up instead of assuming ⌘digit.

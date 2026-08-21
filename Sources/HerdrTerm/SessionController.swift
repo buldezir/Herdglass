@@ -364,10 +364,21 @@ final class SessionController {
         }
     }
 
-    /// Herdr decides which pane lies in a direction — it owns the geometry.
+    /// Herdr decides which pane lies in a direction — it owns the geometry — and
+    /// this client then has to *go* there.
+    ///
+    /// Adopting the answer is the whole feature, not a refinement of it:
+    /// `settleSelection` only fills a selection that has gone missing, so a
+    /// request that moves the server's focus and says nothing else leaves the
+    /// accent border and the keyboard on the pane the user was already in. The
+    /// keystroke then looks dead — and pressing it again asks the same
+    /// question from the same pane. `no_neighbor` comes back as the pane it
+    /// started from, which lands on itself and is the no-op it should be.
     func focusNeighbour(_ direction: PaneDirection) {
         guard let paneId = selectedPaneId, let rpc else { return }
-        perform { try rpc.focusPane(from: paneId, direction: direction) }
+        perform({ try rpc.focusPane(from: paneId, direction: direction).focusedPaneId }) { session, paneId in
+            session.selectPane(paneId)
+        }
     }
 
     /// Open a tab and go to it. Herdr focuses it server-side, but this client's

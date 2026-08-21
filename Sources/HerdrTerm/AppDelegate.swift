@@ -4,7 +4,10 @@ import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windows: [MainWindowController] = []
+    /// The window. There is exactly one — see `HerdrTermMain` for the other
+    /// half of that rule, the one that keeps a second *process* from opening a
+    /// second one.
+    private var main: MainWindowController?
     private var settings: SettingsWindowController?
     private let initialTarget: ConnectTarget?
 
@@ -24,9 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         RemoteConnection.pruneStaleWorkDirs()
         AgentNotifications.prepare(delegate: self)
-        // Only this window restores: the hosts that were attached when the app
-        // was last running come back with it.
-        openWindow(target: initialTarget, restoringHosts: initialTarget == nil)
+        // A launch with no `--connect` restores: the hosts that were attached
+        // when the app was last running come back with it.
+        showMainWindow(target: initialTarget, restoringHosts: initialTarget == nil)
     }
 
     /// The app-wide half of the ghostty config: the appearance `window-theme`
@@ -49,30 +52,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         // Drop SSH masters and temp dirs now; `deinit` is not guaranteed at exit.
-        for controller in windows {
-            controller.window?.performClose(nil)
-        }
+        main?.window?.performClose(nil)
     }
 
-    @objc func newWindow(_ sender: Any?) {
-        openWindow(target: nil)
+    /// Clicking the Dock icon comes back to the window that already exists —
+    /// including out of the Dock, which the default reopen does not do for a
+    /// miniaturized window it did not open itself.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard let window = main?.window else { return true }
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        return false
     }
 
-    /// `performClose` on a copy of the list: each window drops itself out of
-    /// `windows` from `windowWillClose`, which is a mutation of the array being
-    /// walked.
-    @objc func closeAllWindows(_ sender: Any?) {
-        for controller in windows {
-            controller.window?.performClose(sender)
-        }
-    }
-
-    private func openWindow(target: ConnectTarget?, restoringHosts: Bool = false) {
-        let controller = MainWindowController(initialTarget: target, restoringHosts: restoringHosts)
-        controller.onClose = { [weak self] closed in
-            self?.windows.removeAll { $0 === closed }
-        }
-        windows.append(controller)
+    /// The window, made once and shown again afterwards.
+    ///
+    /// A second one is not a feature this app withholds, it is one it cannot
+    /// have: every window would show the same remembered hosts, and dialling
+    /// them from two places gives each host a second SSH master and a second
+    /// set of bridges for the same panes — two clients disagreeing about one
+    /// server, in one app.
+    private func showMainWindow(target: ConnectTarget?, restoringHosts: Bool = false) {
+        let controller = main ?? {
+            let new = MainWindowController(initialTarget: target, restoringHosts: restoringHosts)
+            new.onClose = { [weak self] closed in
+                guard self?.main === closed else { return }
+                self?.main = nil
+            }
+            main = new
+            return new
+        }()
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -93,14 +103,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Open the pane a notification came from: its window, its host, its space
-    /// and tab, and the keyboard. The pane may belong to any window, and to a
-    /// host none of them is currently showing.
+    /// Open the pane a notification came from: its host, its space and tab, and
+    /// the keyboard. The pane belongs to a host the window may not be showing.
     private func reveal(paneId: String) {
         NSApp.activate(ignoringOtherApps: true)
-        for controller in windows {
-            if controller.reveal(paneId: paneId) { return }
-        }
+        main?.reveal(paneId: paneId)
     }
 }
 
@@ -188,18 +195,20 @@ enum MainMenu {
 
     private static func file() -> NSMenu {
         let menu = NSMenu(title: "File")
-        menu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
-            .ghostty(.newWindow)
         menu.addItem(withTitle: "Add Host…", action: #selector(MainWindowController.showConnectSheet), keyEquivalent: "k")
         menu.addItem(withTitle: "New Space", action: #selector(MainWindowController.newSpace(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Reconnect", action: #selector(MainWindowController.reconnect), keyEquivalent: "r")
         menu.addItem(withTitle: "Disconnect", action: #selector(MainWindowController.disconnect), keyEquivalent: "")
         menu.addItem(.separator())
-        // The same four closes ghostty has, in the same order and on the same
-        // keys. ⌘W is Close, which is the pane when the tab is split and the tab
-        // when it is not — closing a whole split with one keystroke is not
-        // something the user can ask for by accident.
+        // Three of the four closes ghostty has, in the same order and on the
+        // same keys. ⌘W is Close, which is the pane when the tab is split and
+        // the tab when it is not — closing a whole split with one keystroke is
+        // not something the user can ask for by accident. Close All Windows is
+        // not among them: with one window it is Close Window under a second
+        // name and a second key. (AppKit still grows its own "Close All" out of
+        // Close Window, on ⌥⇧⌘W, shown while Option is held — that one is the
+        // system's and closes the same single window.)
         menu.addItem(withTitle: "Close", action: #selector(MainWindowController.closePane(_:)), keyEquivalent: "w")
             .ghostty(.closeSurface)
         let closeTab = menu.addItem(
@@ -216,13 +225,6 @@ enum MainMenu {
         )
         closeWindow.keyEquivalentModifierMask = [.command, .shift]
         closeWindow.ghostty(.closeWindow)
-        let closeAll = menu.addItem(
-            withTitle: "Close All Windows",
-            action: #selector(AppDelegate.closeAllWindows(_:)),
-            keyEquivalent: "w"
-        )
-        closeAll.keyEquivalentModifierMask = [.command, .option, .shift]
-        closeAll.ghostty(.closeAllWindows)
         return menu
     }
 
@@ -232,20 +234,39 @@ enum MainMenu {
         let menu = NSMenu(title: "Terminal")
         menu.addItem(withTitle: "New Tab", action: #selector(MainWindowController.newTab(_:)), keyEquivalent: "t")
             .ghostty(.newTab)
+        // The arrows the chrome is laid out in: tabs run across the strip, so
+        // they are ⌥⌘← and ⌥⌘→, and spaces run down the sidebar — every
+        // attached host's, one list — so they are ⌥⌘↑ and ⌥⌘↓. Splits, which
+        // are the layer below both, take the same four arrows with ⌃ added.
         let nextTab = menu.addItem(
             withTitle: "Next Tab",
             action: #selector(MainWindowController.selectNextTab),
-            keyEquivalent: "]"
+            keyEquivalent: "\u{F703}"
         )
-        nextTab.keyEquivalentModifierMask = [.command, .shift]
+        nextTab.keyEquivalentModifierMask = [.command, .option]
         nextTab.ghostty(.nextTab)
         let previousTab = menu.addItem(
             withTitle: "Previous Tab",
             action: #selector(MainWindowController.selectPreviousTab),
-            keyEquivalent: "["
+            keyEquivalent: "\u{F702}"
         )
-        previousTab.keyEquivalentModifierMask = [.command, .shift]
+        previousTab.keyEquivalentModifierMask = [.command, .option]
         previousTab.ghostty(.previousTab)
+        menu.addItem(.separator())
+        // Spaces are Herdr's own, so ghostty has no action to rebind these to,
+        // and they cross hosts: the walk is the sidebar, top to bottom.
+        let nextSpace = menu.addItem(
+            withTitle: "Next Space",
+            action: #selector(MainWindowController.selectNextSpace),
+            keyEquivalent: "\u{F701}"
+        )
+        nextSpace.keyEquivalentModifierMask = [.command, .option]
+        let previousSpace = menu.addItem(
+            withTitle: "Previous Space",
+            action: #selector(MainWindowController.selectPreviousSpace),
+            keyEquivalent: "\u{F700}"
+        )
+        previousSpace.keyEquivalentModifierMask = [.command, .option]
         menu.addItem(.separator())
         menu.addItem(withTitle: "Split Right", action: #selector(MainWindowController.splitRight), keyEquivalent: "d")
             .ghostty(.splitRight)
@@ -266,7 +287,7 @@ enum MainMenu {
             ("Down", #selector(MainWindowController.focusPaneDown), "\u{F701}", .focusSplitDown),
         ] {
             let item = focus.addItem(withTitle: title, action: selector, keyEquivalent: key)
-            item.keyEquivalentModifierMask = [.command, .option]
+            item.keyEquivalentModifierMask = [.command, .option, .control]
             item.ghostty(action)
         }
         let focusItem = NSMenuItem(title: "Select Split", action: nil, keyEquivalent: "")
@@ -351,6 +372,17 @@ extension NSMenu {
     /// Attention, Toggle Sidebar) survive: ghostty either has no keybind for
     /// them or no such action at all.
     ///
+    /// So does an item whose only competition is a ghostty *default*
+    /// (`GhosttyConfig.isRebound`). This window has hosts and spaces in it that
+    /// ghostty has no actions for, and they need the same arrows: ⌥⌘↑ and ⌥⌘↓
+    /// walk the spaces, so the splits ghostty puts there move down to
+    /// ⌃⌥⌘arrows. Moving `goto_split:up` somewhere else in the config still
+    /// moves the menu item — the one thing that cannot be honoured is a config
+    /// that spells ghostty's default out again, since a re-typed default and a
+    /// default are the same two bytes to `ghostty_config_trigger`.
+    /// An item that ships with no key of its own — Open Terminal Config, whose
+    /// ⌘, *is* ghostty's default — takes the binding either way.
+    ///
     /// Unless it collides. `open_config` is ⌘, in ghostty and Settings is ⌘,
     /// everywhere in macOS, so those two items ship wanting the same key; a menu
     /// with a duplicate key equivalent silently gives it to whichever item comes
@@ -365,6 +397,7 @@ extension NSMenu {
         for item in items {
             claimed.formUnion(item.submenu?.applyGhosttyTriggers(config) ?? [])
             guard let action = item.ghosttyAction, let shortcut = config.shortcut(action) else { continue }
+            guard item.keyEquivalent.isEmpty || config.isRebound(action) else { continue }
             item.keyEquivalent = shortcut.keyEquivalent
             item.keyEquivalentModifierMask = shortcut.modifiers
             claimed.insert(shortcut)
@@ -399,8 +432,10 @@ extension NSMenu {
                     keyEquivalent: item.keyEquivalent,
                     modifiers: item.keyEquivalentModifierMask
                 )
+                // By what the item is actually wearing: an action whose
+                // keybind was not applied kept this app's own key.
                 let source = item.ghosttyAction
-                    .flatMap { config.shortcut($0) == nil ? nil : "keybind \($0.rawValue)" }
+                    .flatMap { config.shortcut($0) == shortcut ? "keybind \($0.rawValue)" : nil }
                     ?? "built in"
                 lines.append("\(indent)\(item.title.padding(toLength: 24, withPad: " ", startingAt: 0)) "
                     + "\(shortcut.display.padding(toLength: 6, withPad: " ", startingAt: 0)) \(source)")

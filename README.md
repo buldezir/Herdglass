@@ -143,13 +143,17 @@ that describes a *pane* belongs to the Herdr server.
 
 ## Hosts come back
 
-The hosts that were attached when you last quit are dialled again at launch, in
-the window that opens with the app — so a restart comes back to the sessions it
-left rather than to a sidebar of dimmed rows. A host leaves that list when you
-detach it yourself (**Disconnect**, or **Remove Host**); closing the window and
-quitting do not count, which is the whole point. Every other remembered host
-stays parked until you pick it, and a ⌘N window starts parked too rather than
-opening a second SSH master per host.
+The hosts that were attached when you last quit are dialled again at launch — so
+a restart comes back to the sessions it left rather than to a sidebar of dimmed
+rows. A host leaves that list when you detach it yourself (**Disconnect**, or
+**Remove Host**); closing the window and quitting do not count, which is the
+whole point. Every other remembered host stays parked until you pick it.
+
+There is one window, and one app. A second copy — `open -n`, or the binary run
+straight out of `.build` — brings the one already running to the front and
+exits rather than starting a rival: both would dial the same hosts, and every
+host would end up with two SSH masters and two sets of bridges for the same
+panes.
 
 ## Your ghostty config
 
@@ -172,7 +176,7 @@ app by configuring ghostty:
 | `window-save-state` | `never` stops the window remembering its position |
 | `confirm-close-surface` | `false` never asks before closing a tab, `always` always does |
 | `focus-follows-mouse` | Hovering a pane of a split moves the keyboard into it |
-| `keybind` | Moves this app's menu shortcuts. `new_tab`, `new_window`, `close_surface`, `close_tab`, `close_window`, `close_all_windows`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `goto_tab:1`…`9`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
+| `keybind` | Moves this app's menu shortcuts. `new_tab`, `close_surface`, `close_tab`, `close_window`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `goto_tab:1`…`9`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
 
 To see exactly what arrived:
 
@@ -196,15 +200,15 @@ Defaults, and all of them movable with `keybind` (see above).
 | --- | --- |
 | `⌘K` | Add host… |
 | `⌘R` | Reconnect the selected host |
-| `⌘N` | New window |
 | `⌘T` | New tab in the selected space |
 | `⌘W` | Close: the pane, in a split; the tab, when the tab has one pane |
-| `⌥⌘W` | Close tab, split or not (`⇧⌘W` the window, `⌥⇧⌘W` all of them) |
+| `⌥⌘W` | Close tab, split or not (`⇧⌘W` closes the window, and the app) |
 | `⌘D` / `⇧⌘D` | Split the active pane right / down |
-| `⌘⌥←↑↓→` | Move the keyboard to the pane in that direction |
+| `⌃⌥⌘←↑↓→` | Move the keyboard to the pane in that direction |
 | `⌘1`…`⌘9` | Tab with that number, in the selected space |
 | `⌃⌘1`…`⌃⌘9` | Space with that number |
-| `⇧⌘[` / `⇧⌘]` | Previous / next tab |
+| `⌥⌘←` / `⌥⌘→` | Previous / next tab |
+| `⌥⌘↑` / `⌥⌘↓` | Previous / next space, down the whole sidebar (hosts included) |
 | `⇧⌘U` | Jump to the pane that needs attention (any host) |
 | `⌃⌘S` | Toggle sidebar |
 | `⌃⌘F` | Full screen |

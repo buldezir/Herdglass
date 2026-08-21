@@ -361,6 +361,25 @@ private let splitTreeJSON = """
     #expect(abs(ratio - 0.3) < 0.0001)
 }
 
+@Test func focusingANeighbourSaysWhichPaneItLandedOn() throws {
+    // The GUI's selection follows this id, not the server's own focus, so a
+    // reply that decodes to the wrong pane is a keystroke that moves the border
+    // somewhere the user did not ask for. `no_neighbor` answers with the pane it
+    // started from, which is what makes an edge press a no-op.
+    let moved = try JSONDecoder().decode(PaneFocus.self, from: Data("""
+    {"changed": true, "focused_pane_id": "w4:p1B", "source_pane_id": "w4:p1C"}
+    """.utf8))
+    #expect(moved.changed)
+    #expect(moved.focusedPaneId == "w4:p1B")
+
+    let edge = try JSONDecoder().decode(PaneFocus.self, from: Data("""
+    {"changed": false, "focused_pane_id": "w4:p1C", "reason": "no_neighbor"}
+    """.utf8))
+    #expect(!edge.changed)
+    #expect(edge.focusedPaneId == "w4:p1C")
+    #expect(edge.reason == "no_neighbor")
+}
+
 @Test func splitRatioPathsAreFirstFalseSecondTrue() throws {
     // `layout.set_split_ratio` addresses a divider by the descent that reaches
     // it: false into `first`, true into `second`. A wrong path silently resizes

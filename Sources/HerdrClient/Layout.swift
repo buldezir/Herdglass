@@ -16,6 +16,25 @@ public enum PaneDirection: String, Codable, Sendable {
     case down
 }
 
+/// What `pane.focus_direction` answers: the pane Herdr moved the focus to, and
+/// whether it moved at all (`changed` is false with `reason` `no_neighbor` when
+/// the direction leads off the edge of the split).
+///
+/// A GUI client needs the id, not just the acknowledgement: its own selection —
+/// the accent border and the keyboard — is its own, and only follows the server
+/// when it is told where the server went.
+public struct PaneFocus: Codable, Sendable {
+    public var changed: Bool
+    public var focusedPaneId: String
+    public var reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case changed
+        case focusedPaneId = "focused_pane_id"
+        case reason
+    }
+}
+
 /// The split tree of one tab, as returned by `layout.export`.
 ///
 /// The flat `layouts` array in `session.snapshot` carries cell rectangles and a

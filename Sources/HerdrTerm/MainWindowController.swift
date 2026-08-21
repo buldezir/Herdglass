@@ -18,10 +18,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private var connectSheet: ConnectSheetController?
     private var numberKeyMonitor: Any?
 
-    /// `restoringHosts` is the launch window's alone. A window opened with ⌘N
-    /// shows the same remembered hosts, but dialling them all again would give
-    /// every host a second SSH master and a second set of bridges for the same
-    /// panes — so a new window starts parked, the way it always has.
+    /// `restoringHosts` belongs to a launch with nothing named on the command
+    /// line: `--connect somewhere` asked for one host, and dialling the
+    /// remembered ones alongside it is not what was asked for.
     convenience init(initialTarget: ConnectTarget? = nil, restoringHosts: Bool = false) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1180, height: 760),
@@ -379,7 +378,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// Show the pane behind a notification: the host it belongs to, the space
     /// and tab it sits in, and the keyboard. False when this window does not
-    /// know the pane, so the app can ask its other windows.
+    /// know the pane.
     @discardableResult
     func reveal(paneId: String) -> Bool {
         guard let connection = connections.connections.first(where: { $0.session.snapshot?.pane(paneId) != nil })
@@ -451,6 +450,34 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         else { return }
         let next = tabs[(current + offset + tabs.count) % tabs.count]
         select(focusTerminal: true) { $0.selectTab(next.tabId) }
+    }
+
+    @objc func selectNextSpace() { step(spacesBy: 1) }
+    @objc func selectPreviousSpace() { step(spacesBy: -1) }
+
+    /// Down the whole sidebar, not one folder of it: ⌥⌘↑ and ⌥⌘↓ walk every
+    /// attached host's spaces in sidebar order and wrap, so the last space of
+    /// one host steps into the first space of the next and the host selection
+    /// follows. (⌃⌘1…⌃⌘9 stay within the selected host — they name a space by
+    /// its number, which only means anything inside one.)
+    ///
+    /// A host that is remembered but not attached has no spaces and is simply
+    /// not in the walk: stepping past it must not dial it, the way selecting
+    /// its row would.
+    private func step(spacesBy offset: Int) {
+        let spaces = connections.connections.flatMap { connection in
+            connection.session.spaces.map { (host: connection.id, space: $0.workspaceId) }
+        }
+        guard !spaces.isEmpty else { return }
+        // With nothing selected yet, step in from the end the user is coming
+        // from rather than doing nothing.
+        let current = spaces.firstIndex {
+            $0.host == connections.selectedConnectionId
+                && $0.space == connections.selectedSession?.selectedSpace?.workspaceId
+        } ?? (offset > 0 ? -1 : 0)
+        let next = spaces[(current + offset + spaces.count) % spaces.count]
+        if next.host != connections.selectedConnectionId { connections.select(next.host) }
+        select(focusTerminal: true) { $0.selectSpace(next.space) }
     }
 
     /// Closing a tab destroys its panes on the server, so ask first when there
@@ -550,6 +577,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return session?.selectedPaneId != nil
         case #selector(selectNextTab), #selector(selectPreviousTab):
             return (session?.tabsInSelectedSpace.count ?? 0) > 1
+        case #selector(selectNextSpace), #selector(selectPreviousSpace):
+            return connections.connections.reduce(0) { $0 + $1.session.spaces.count } > 1
         default:
             return true
         }
