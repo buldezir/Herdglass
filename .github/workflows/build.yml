@@ -14,10 +14,10 @@ concurrency:
 jobs:
   macos:
     # Apple Silicon: libghostty is built for the host, and the app is arm64-only.
-    # macos-26 rather than macos-15 because ghostty's tip wants a current Xcode
-    # (Metal toolchain, recent SDK), which is also what this app is built with.
+    # macos-26 rather than macos-latest because ghostty's tip wants a current
+    # Xcode (Metal toolchain, recent SDK), and pinning keeps an image promotion
+    # from moving Xcode under a cached xcframework the key does not cover.
     runs-on: macos-26
-    # A cold libghostty build compiles ghostty with -Doptimize=ReleaseFast.
     timeout-minutes: 90
     # Only the Release step needs more than read: it creates the release and
     # uploads the zip with the job's own GITHUB_TOKEN.
@@ -25,7 +25,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Vendor/ghostty is the pin Scripts/libghostty.sh builds from, and
           # --check reads its HEAD even when the artifact comes from the cache.
@@ -41,20 +41,24 @@ jobs:
         id: pin
         run: echo "ghostty=$(git -C Vendor/ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Vendor/GhosttyKit.xcframework is not in git; it is reproducible from the
-      # pin, so key the cache on the pin and rebuild only when it moves.
+      # restore/save rather than the combined cache action: its save runs as a
+      # post step, which is skipped when the job is cancelled or a later step
+      # fails, and that threw away a finished libghostty build once already.
+      # Saving right after the build ties the cache to the artifact existing and
+      # to nothing else.
       - name: Restore libghostty
         id: libghostty-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             Vendor/GhosttyKit.xcframework
             Vendor/libghostty.version
           key: libghostty-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.ghostty }}
 
-      - name: Cache zig
+      - name: Restore zig
         if: steps.libghostty-cache.outputs.cache-hit != 'true'
-        uses: actions/cache@v4
+        id: zig-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             Vendor/zig
@@ -63,8 +67,8 @@ jobs:
           restore-keys: |
             zig-${{ runner.os }}-${{ runner.arch }}-
 
-      # ghostty compiles Metal shaders, and the toolchain ships as a separate
-      # Xcode component that the runner image does not always carry.
+      # ghostty compiles Metal shaders, and Xcode 26 ships that toolchain as a
+      # separate component the runner image does not always carry.
       - name: Metal toolchain
         if: steps.libghostty-cache.outputs.cache-hit != 'true'
         run: |
@@ -76,7 +80,26 @@ jobs:
 
       - name: Build libghostty
         if: steps.libghostty-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 45
         run: ./Scripts/libghostty.sh
+
+      - name: Save libghostty
+        if: steps.libghostty-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            Vendor/GhosttyKit.xcframework
+            Vendor/libghostty.version
+          key: libghostty-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.ghostty }}
+
+      - name: Save zig
+        if: steps.libghostty-cache.outputs.cache-hit != 'true' && steps.zig-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            Vendor/zig
+            ~/.cache/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.ghostty }}
 
       # Says whether what the cache handed us still matches the pin; dev.sh and
       # release.sh run it too and stop if it does not.
@@ -85,10 +108,11 @@ jobs:
           ./Scripts/libghostty.sh --check
           cat Vendor/libghostty.version
 
-      - name: Test
-        run: swift test --filter HerdrClientTests
-
+      # The app is built and uploaded before the tests run, so a test that hangs
+      # or fails still leaves a downloadable build. The Release step is after
+      # them, so a tag's asset is only ever published from a green suite.
       - name: Build app
+        timeout-minutes: 20
         run: ./Scripts/release.sh
 
       # ditto keeps the bundle's symlinks and its ad-hoc signature; `zip` does
@@ -96,11 +120,40 @@ jobs:
       - name: Package
         run: ditto -c -k --sequesterRsrc --keepParent .build/release-app/Herdglass.app .build/Herdglass.app.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Herdglass-${{ github.sha }}
           path: .build/Herdglass.app.zip
           if-no-files-found: error
+
+      # `swift test` hung here for 82 minutes on the first run — build complete,
+      # then not one line of output, and swiftpm-testing left as an orphan at
+      # cleanup. So it runs under a pty, because SwiftPM block-buffers into a
+      # pipe and the whole suite's output fits in one buffer, i.e. a hang looks
+      # identical to silence; and under a watchdog that samples the stuck
+      # process, so the log says where it stopped rather than only that it did.
+      - name: Test
+        timeout-minutes: 15
+        run: |
+          script -q /dev/null swift test --filter HerdrClientTests 2>&1 &
+          TEST=$!
+          (
+            sleep 300
+            kill -0 "$TEST" 2>/dev/null || exit 0
+            echo "::group::swift test is still running after 5m — sampling"
+            pgrep -fl 'swiftpm-testing|HerdglassPackageTests|xctest' || true
+            for pid in $(pgrep -f 'swiftpm-testing|HerdglassPackageTests|xctest'); do
+              /usr/bin/sample "$pid" 3 -file /dev/stdout 2>&1 | head -150 || true
+            done
+            echo "::endgroup::"
+            pkill -9 -f 'swiftpm-testing|HerdglassPackageTests|xctest' || true
+            kill -9 "$TEST" 2>/dev/null || true
+          ) &
+          WATCHDOG=$!
+          STATUS=0
+          wait "$TEST" || STATUS=$?
+          kill "$WATCHDOG" 2>/dev/null || true
+          exit "$STATUS"
 
       # A v* tag publishes the same zip as a Release asset, so a download needs
       # no GitHub login — an Actions artifact does. Re-running a tag's build
