@@ -59,8 +59,8 @@ final class ConnectionsController: SessionControllerDelegate {
         connections.first { $0.id == id }
     }
 
-    /// Any connection with something unread, so the toolbar bell can light up
-    /// for a host the window is not currently showing.
+    /// Any connection with something unread, including a host the window is not
+    /// currently showing — which is what makes ⇧⌘U able to jump to one.
     var hasAttention: Bool {
         connections.contains { $0.session.hasAttention }
     }

@@ -1,6 +1,6 @@
 # herdr-term
 
-Native macOS GUI client for remote [Herdr](https://herdr.dev) servers, with a GPU terminal via [libghostty](https://github.com/ghostty-org/ghostty) / [GhosttyKit](https://github.com/briannadoubt/GhosttyKit) and attention rings when an agent is `blocked` or has an unseen `done`.
+Native macOS GUI client for remote [Herdr](https://herdr.dev) servers, with a GPU terminal via [libghostty](https://github.com/ghostty-org/ghostty) / [GhosttyKit](https://github.com/briannadoubt/GhosttyKit), attention rings when an agent is `blocked` or has an unseen `done`, and macOS notifications for the ones you are not looking at.
 
 The window maps straight onto Herdr's own structure:
 
@@ -73,6 +73,20 @@ Requests on the API socket are **one-shot**: Herdr answers a single request and 
 
 Only the selected tab of the selected host is rendered, so only its panes hold bridges — switching tabs or hosts releases the previous ones.
 
+## Notifications
+
+An agent that asks for input or finishes in a pane you are not looking at — a
+different tab, a different space, a different host — posts a macOS notification:
+the pane's name, the host and space it is in, and what it wants. Opening the
+notification selects that pane, dialling the host and switching space and tab to
+get there. Seeing the pane withdraws the notification again, the same moment the
+sidebar's unread mark clears, so Notification Center never holds a request you
+have already answered.
+
+This is Herdr's own notion of a notification — what `[ui.toast] delivery` in
+`config.toml` delivers as a TUI toast — taken by the client that has an OS to
+hand it to. Turn it off in **herdr-term → Settings…**.
+
 ## Your ghostty config
 
 The terminal is libghostty, so it already reads `~/.config/ghostty/config` (or
@@ -130,6 +144,10 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌃⌘S` | Toggle sidebar |
 | `⌃⌘F` | Full screen |
 | `⌘,` / `⇧⌘,` | Open / reload the ghostty config |
+
+`⌘,` is ghostty's own `open_config` binding, and this app honours it. Settings —
+the app's own window, with the notification switch — is in the herdr-term menu,
+and takes `⌘,` only if your ghostty config points `open_config` somewhere else.
 
 Clicking a pane moves the keyboard into it — that is also how the active pane of a split changes, and Herdr is told about it. Arrow keys browse the sidebar without stealing focus. The sidebar is draggable between 180 and 460 pt and its width is remembered.
 

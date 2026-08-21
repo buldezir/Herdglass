@@ -5,6 +5,7 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windows: [MainWindowController] = []
+    private var settings: SettingsWindowController?
     private let initialTarget: ConnectTarget?
 
     init(initialTarget: ConnectTarget? = nil) {
@@ -22,7 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
         RemoteConnection.pruneStaleWorkDirs()
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        AgentNotifications.prepare(delegate: self)
         openWindow(target: initialTarget)
     }
 
@@ -73,6 +74,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func openTerminalConfig(_ sender: Any?) {
         GhosttyRuntime.openConfig()
     }
+
+    @objc func showSettings(_ sender: Any?) {
+        let controller = settings ?? SettingsWindowController()
+        settings = controller
+        controller.showWindow(sender)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Open the pane a notification came from: its window, its host, its space
+    /// and tab, and the keyboard. The pane may belong to any window, and to a
+    /// host none of them is currently showing.
+    private func reveal(paneId: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        for controller in windows {
+            if controller.reveal(paneId: paneId) { return }
+        }
+    }
+}
+
+// MARK: - Notifications
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Banner even while this app is frontmost: a notification is only ever
+    /// posted for a pane that is *not* on screen, so the user still cannot see
+    /// what it is telling them about.
+    ///
+    /// Both callbacks are `nonisolated` because nothing UserNotifications hands
+    /// over is `Sendable`: read the one string we need where it arrives, and hop
+    /// to the main actor with that.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let paneId = response.notification.request.content.userInfo[AgentNotifications.paneIdKey] as? String
+        completionHandler()
+        guard let paneId else { return }
+        Task { @MainActor in self.reveal(paneId: paneId) }
+    }
 }
 
 /// The menu bar. Built in code because there is no nib; kept close to the
@@ -102,6 +150,8 @@ enum MainMenu {
     private static func app() -> NSMenu {
         let menu = NSMenu(title: "herdr-term")
         menu.addItem(withTitle: "About herdr-term", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: ",")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Reload Terminal Config", action: #selector(AppDelegate.reloadTerminalConfig(_:)), keyEquivalent: "")
             .ghostty(.reloadConfig)
@@ -273,12 +323,39 @@ extension NSMenu {
     /// with — that is how ⌘C, ⌘V and the Herdr-only items (Add Host, Jump to
     /// Attention, Toggle Sidebar) survive: ghostty either has no keybind for
     /// them or no such action at all.
+    ///
+    /// Unless it collides. `open_config` is ⌘, in ghostty and Settings is ⌘,
+    /// everywhere in macOS, so those two items ship wanting the same key; a menu
+    /// with a duplicate key equivalent silently gives it to whichever item comes
+    /// first and the other simply stops working. The keybind wins, because it is
+    /// the user's own, and this app's default steps aside.
     func applyGhosttyShortcuts(_ config: GhosttyConfig) {
+        surrenderShortcuts(to: applyGhosttyTriggers(config))
+    }
+
+    private func applyGhosttyTriggers(_ config: GhosttyConfig) -> Set<GhosttyConfig.Shortcut> {
+        var claimed: Set<GhosttyConfig.Shortcut> = []
         for item in items {
-            item.submenu?.applyGhosttyShortcuts(config)
+            claimed.formUnion(item.submenu?.applyGhosttyTriggers(config) ?? [])
             guard let action = item.ghosttyAction, let shortcut = config.shortcut(action) else { continue }
             item.keyEquivalent = shortcut.keyEquivalent
             item.keyEquivalentModifierMask = shortcut.modifiers
+            claimed.insert(shortcut)
+        }
+        return claimed
+    }
+
+    private func surrenderShortcuts(to claimed: Set<GhosttyConfig.Shortcut>) {
+        for item in items {
+            item.submenu?.surrenderShortcuts(to: claimed)
+            guard item.ghosttyAction == nil, !item.keyEquivalent.isEmpty else { continue }
+            let shortcut = GhosttyConfig.Shortcut(
+                keyEquivalent: item.keyEquivalent,
+                modifiers: item.keyEquivalentModifierMask
+            )
+            guard claimed.contains(shortcut) else { continue }
+            item.keyEquivalent = ""
+            item.keyEquivalentModifierMask = []
         }
     }
 }

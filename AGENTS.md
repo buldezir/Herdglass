@@ -7,7 +7,7 @@ Do not fork or copy [cmux](https://github.com/manaflow-ai/cmux) (AGPL). Renderin
 ## Layout
 
 - `Sources/HerdrClient/` — SSH attach, Unix JSON-RPC, `terminal session control` bridge, models, split-layout tree (`Layout.swift`)
-- `Sources/HerdrTerm/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`)
+- `Sources/HerdrTerm/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`), settings window and macOS notifications (`AgentNotifications.swift`)
 - `Tests/HerdrClientTests/` — parsing, framing, and RPC-transport tests
 - `Scripts/dev.sh` — build `.build/HerdrTerm.app` and optionally `--run` (extra args pass through)
 - `Scripts/release.sh` — optimized build at `.build/release-app/HerdrTerm.app`, `--install` to `/Applications`, optionally `--run`
@@ -97,11 +97,14 @@ before touching `HerdrRPC` or `SessionController`.
 - The content pane is pinned to `safeAreaLayoutGuide`, not raw bounds — the window uses `.fullSizeContentView` and content would otherwise sit under the toolbar.
 - Nothing inside the sidebar may have an opinion about its width. A subview pinned to both edges hugs at 250, which ties with `NSSplitViewItem.holdingPriority`, and the divider then silently refuses to drag at all — that is how `emptyLabel` froze the sidebar at `minimumThickness`. Give any such view hugging and compression resistance of 1.
 - `NSSplitViewController` ignores `splitView.autosaveName`: on launch it lays the sidebar out at AppKit's default thickness and autosaves *that* over the width the user dragged to. `SidebarSplitViewController` persists the width itself, and both halves are load-bearing — it restores only once the window has a frame wide enough to honour the stored width (the first layout pass runs narrower than the restored frame and would clamp it to `minimumThickness`), and it saves only when the mouse is down with the pointer on the divider, because `didResizeSubviewsNotification` also fires for a window resize that squeezes the sidebar.
+- The app's own settings are the ones neither ghostty nor Herdr can express — how this behaves as a *macOS app*. That is one checkbox today (notifications) and should stay small: a setting that describes a terminal belongs in the ghostty config, and one that describes a pane belongs to the server.
 - One vocabulary, everywhere: **host** (a connection), **space** (Herdr workspace), **tab**, **pane**. The sidebar is hosts → spaces, the strip is tabs, the panes are the splits. Menu items and labels use those words, not "workspace".
 - `SidebarView.apply` and `TabBarView.apply` reload only when row identity changes and reconfigure cells in place otherwise; a full `reloadData` on every snapshot would throw away scroll position and the user's collapsed hosts.
 - A sidebar row is a host or a space, and each says its state one way only: a host gets an icon (tinted when something inside wants attention) and a spinner while it dials, a space gets the status dot. A remembered but unattached host is dimmed, not hidden — selecting it is how the user dials it.
 - Pane borders mean two different things: the loud ring is attention (pulsing while blocked), the quiet accent border says which pane of a *split* holds the keyboard. A tab with one pane never draws the quiet one.
 - Only the selected host renders. A pane counts as read when it is on screen, i.e. in the selected tab of the visible host (`SessionController.isVisible`), so a split of four panes clears four attention flags.
+- **A pane off screen says so through macOS, not through a blinking toolbar.** Herdr's own notion of a notification is a background agent changing state, and its config picks the delivery (`[ui.toast] delivery`: an in-app toast, the outer terminal, the OS, or nothing). A GUI client has no toast layer and no outer terminal, so `AgentNotifications` takes the OS route on Herdr's behalf. Three rules keep it quiet, and they are why the toolbar bell is gone rather than merely hidden: notify on the *transition* into `blocked`/`done`, never on a state that is merely still true; skip a reason a pane has already been notified about (`SessionController.notifiedReasons` — Herdr's detection genuinely flaps `blocked → working → blocked` inside a second while an agent redraws its prompt, and the bell flickering at that rate is what the notification replaces); and withdraw the notification the moment the pane is read, so `markRead` and Notification Center say the same thing. One identifier per pane (`pane-<id>`) is what makes the last two possible.
+- Two shortcuts wanted `⌘,`: ghostty's `open_config` default and the macOS Settings key. A duplicate key equivalent in one menu is silently given to whichever item comes first, so `NSMenu.applyGhosttyShortcuts` collects what the keybinds claimed and makes anything else holding that shortcut surrender it — the user's own config wins, and Settings… goes shortcutless unless they move `open_config`. Anything new with a built-in key equivalent inherits that rule for free.
 - libghostty's tick is reference counted by attached panes (`GhosttyRuntime`), not left running at 60 Hz forever.
 - Window-scoped key monitors must be removed in `windowWillClose`, or a closed window keeps swallowing ⌘1…⌘9.
 - A bridge that exits on its own must **not** be re-attached automatically (`TerminalPaneView.detachedPaneId`); refresh would immediately respawn it and spin. Re-attaching is permission the user grants by picking the pane again, which routes through `MainWindowController.select`.
@@ -156,6 +159,24 @@ does not move. A pid that changes on every switch is the old behaviour back.
 What must still drop panes: closing the tab on the server, switching hosts,
 Disconnect, and going past the warm cap. After any of those,
 `pgrep -f 'terminal session control'` has to come back down.
+
+Notifications need an agent status to move, and no CLI sets one — Herdr detects
+it from the pane's process name and its output (`herdr agent explain <pane>`
+prints the rule that fired). A fake agent is enough to drive the whole path:
+
+```bash
+mkdir -p /tmp/fakeagent
+printf '#!/bin/bash\necho "Bash command"\necho "Do you want to proceed?"\necho "  1. Yes"\necho "  2. No"\nread -r _\n' \
+  > /tmp/fakeagent/claude && chmod +x /tmp/fakeagent/claude
+# in a space the window is NOT showing:
+herdr pane run <pane> 'PATH=/tmp/fakeagent:$PATH claude'
+herdr agent explain <pane>   # state: blocked, rule: bash_permission_prompt
+```
+
+The pane then goes `blocked`, one notification is posted, and switching the
+window to that space withdraws it. `UNUserNotificationCenter.getDeliveredNotifications`
+is the check that macOS really took it — a banner may be suppressed by a Focus
+mode while the notification is still delivered.
 
 A pane that visibly reloads on a timer means the session is reconnecting, not
 that rendering is slow. Distinguish the two:

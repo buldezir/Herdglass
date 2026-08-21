@@ -1,7 +1,5 @@
-import AppKit
 import Foundation
 import HerdrClient
-import UserNotifications
 
 @MainActor
 protocol SessionControllerDelegate: AnyObject {
@@ -84,6 +82,12 @@ final class SessionController {
     }
 
     private var attentionOrder: [String] = []
+    /// What each unread pane was last notified about. Herdr's own detection
+    /// flaps — a pane can read `blocked`, `working`, `blocked` again inside a
+    /// second while the agent redraws its prompt — and without this every flap
+    /// is another banner and another sound. News is a *different* reason, not
+    /// the same one again; the entry is dropped when the pane is read.
+    private var notifiedReasons: [String: AgentNotifications.Reason] = [:]
     private var connection: RemoteConnection?
     private var rpc: HerdrRPC?
     private var events: EventSubscription?
@@ -206,8 +210,10 @@ final class SessionController {
         layoutTrees = [:]
         layoutFetches = []
         layoutPrefetches = [:]
+        for paneId in unreadPaneIds { AgentNotifications.withdraw(paneId: paneId) }
         unreadPaneIds = []
         attentionOrder = []
+        notifiedReasons = [:]
         state = .disconnected
     }
 
@@ -559,16 +565,28 @@ final class SessionController {
             if unreadPaneIds.insert(pane.paneId).inserted {
                 attentionOrder.append(pane.paneId)
             }
-            if !isInitial, pane.agentStatus == .blocked, previousStatus[pane.paneId] != .blocked {
-                notifyBlocked(pane)
+            // Herdr's own notification: a background agent that has just
+            // started asking for something. On the transition only, so a pane
+            // that stays blocked does not re-notify on every poll.
+            if !isInitial,
+               let reason = AgentNotifications.Reason(pane.agentStatus),
+               previousStatus[pane.paneId] != pane.agentStatus,
+               notifiedReasons[pane.paneId] != reason {
+                notifiedReasons[pane.paneId] = reason
+                AgentNotifications.post(
+                    paneId: pane.paneId,
+                    title: pane.displayName,
+                    subtitle: whereabouts(of: pane),
+                    reason: reason
+                )
             }
         }
 
-        // Panes can disappear while unread; keep both trackers to live ids only
-        // or `jumpToAttention` starts selecting panes that no longer exist.
+        // A pane can disappear while it is still unread. Read it rather than
+        // just dropping it: `jumpToAttention` would otherwise start selecting
+        // panes that no longer exist, and its notification would outlive it.
         let liveIds = Set(snapshot.panes.map(\.paneId))
-        unreadPaneIds.formIntersection(liveIds)
-        attentionOrder.removeAll { !unreadPaneIds.contains($0) }
+        for paneId in unreadPaneIds.subtracting(liveIds) { markRead(paneId) }
 
         // A tab that closed takes its cached tree with it.
         let liveTabs = Set(snapshot.tabs.map(\.tabId))
@@ -704,20 +722,23 @@ final class SessionController {
         }
     }
 
+    /// Reading a pane also answers its notification: the banner in Notification
+    /// Center means the same thing as the unread mark in the sidebar, so the two
+    /// are cleared together. Guarded because every snapshot marks every settled
+    /// pane read, and only a pane that really was unread has anything posted.
     private func markRead(_ paneId: String) {
-        unreadPaneIds.remove(paneId)
+        guard unreadPaneIds.remove(paneId) != nil else { return }
         attentionOrder.removeAll { $0 == paneId }
+        notifiedReasons[paneId] = nil
+        AgentNotifications.withdraw(paneId: paneId)
     }
 
-    private func notifyBlocked(_ pane: PaneInfo) {
-        guard !NSApp.isActive else { return }
-        let content = UNMutableNotificationContent()
-        content.title = pane.displayName
-        content.subtitle = target?.displayName ?? ""
-        content.body = "Waiting for input"
-        content.sound = .default
-        UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "blocked-\(pane.paneId)", content: content, trigger: nil)
-        )
+    /// Where a pane is, for a notification that has to say so without the
+    /// window: the host, and the space inside it.
+    private func whereabouts(of pane: PaneInfo) -> String {
+        [target?.displayName, snapshot?.workspace(pane.workspaceId)?.label]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 }

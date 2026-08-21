@@ -14,7 +14,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let splitController = SidebarSplitViewController()
     /// Behind-window blur for `background-blur`; hidden unless the config asks.
     private let blur = NSVisualEffectView()
-    private var attentionItem: NSToolbarItem?
     private var splitItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
     private var numberKeyMonitor: Any?
@@ -229,7 +228,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - NSToolbarDelegate
 
-    private static let attentionItemIdentifier = NSToolbarItem.Identifier("attention")
     private static let connectItemIdentifier = NSToolbarItem.Identifier("connect")
     private static let splitItemIdentifier = NSToolbarItem.Identifier("split")
 
@@ -239,7 +237,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             .sidebarTrackingSeparator,
             .flexibleSpace,
             Self.splitItemIdentifier,
-            Self.attentionItemIdentifier,
             Self.connectItemIdentifier,
         ]
     }
@@ -268,15 +265,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             item.action = #selector(splitRight)
             splitItem = item
             applyToolbarTooltips(GhosttyRuntime.config)
-            return item
-        case Self.attentionItemIdentifier:
-            let item = NSToolbarItem(itemIdentifier: identifier)
-            item.label = "Attention"
-            item.toolTip = "Jump to the pane that needs attention (⇧⌘U)"
-            item.image = NSImage(systemSymbolName: "bell.badge", accessibilityDescription: nil)
-            item.target = self
-            item.action = #selector(jumpToAttention)
-            attentionItem = item
             return item
         case Self.connectItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: identifier)
@@ -378,6 +366,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         content.allowReattach()
         guard connections.selectedSession?.jumpToAttention() != nil else { NSSound.beep(); return }
         content.focusActivePane()
+    }
+
+    /// Show the pane behind a notification: the host it belongs to, the space
+    /// and tab it sits in, and the keyboard. False when this window does not
+    /// know the pane, so the app can ask its other windows.
+    @discardableResult
+    func reveal(paneId: String) -> Bool {
+        guard let connection = connections.connections.first(where: { $0.session.snapshot?.pane(paneId) != nil })
+        else { return false }
+        window?.makeKeyAndOrderFront(nil)
+        if connections.selectedConnectionId != connection.id {
+            connections.select(connection.id)
+        }
+        select(focusTerminal: true) { $0.selectPane(paneId) }
+        return true
     }
 
     @objc func disconnect() {
@@ -547,11 +550,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.title = GhosttyRuntime.config.title
             ?? pane?.displayName ?? session?.selectedSpace?.label ?? "herdr-term"
         window.subtitle = subtitle(session: session, pane: pane)
-        attentionItem?.isEnabled = connections.hasAttention
-        attentionItem?.image = NSImage(
-            systemSymbolName: connections.hasAttention ? "bell.badge.fill" : "bell",
-            accessibilityDescription: nil
-        )
 
         sidebar.apply(buildSidebarModel())
         tabBar.apply(buildTabBarModel(session))
