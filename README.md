@@ -2,6 +2,8 @@
 
 Native macOS GUI client for remote [Herdr](https://herdr.dev) servers, with a GPU terminal via [libghostty](https://github.com/ghostty-org/ghostty), attention rings when an agent is `blocked` or has an unseen `done`, and macOS notifications for the ones you are not looking at.
 
+![Three hosts attached at once — local, agents-base and macmini — with the selected tab drawn as a two-pane split](docs/herdglass.png)
+
 The window maps straight onto Herdr's own structure:
 
 | Chrome | Herdr |
