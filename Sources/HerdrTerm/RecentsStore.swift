@@ -7,24 +7,27 @@ enum RecentsStore {
     private static let selectionKey = "herdr-term.selection"
     private static let selectedHostKey = "herdr-term.selected-host"
 
-    /// The hosts the sidebar shows, in the order it shows them.
+    /// The hosts the sidebar shows, in the order it shows them: `local` first,
+    /// then every remote by name (`ConnectTarget.inHostOrder`).
     ///
-    /// That order is the order they were first added and nothing else: it is what
-    /// `attached()` filters, so it is also the order the next launch dials them
-    /// in, and a list that reordered itself would move a host's folder under the
-    /// pointer for no reason the user asked for.
+    /// The order is computed on the way out rather than stored, so it is the same
+    /// on every launch whatever order the hosts were added in. What *is* stored
+    /// is the order they were added (`stored()`), and that is only ever used to
+    /// decide which one falls off the end of a full list.
     static func load() -> [ConnectTarget] {
-        decode(key)
+        stored().inHostOrder
     }
 
-    /// Add a host to the sidebar, at the end. A host already in the list stays
-    /// exactly where it is — connecting to it again is not a request to move it,
-    /// and this runs on every `finishConnect`, including the ones a launch makes
-    /// by itself.
+    /// Add a host. A host already known is left alone — this runs on every
+    /// `finishConnect`, including the dials a launch makes by itself, and the
+    /// list has nothing to learn from a reconnect.
     static func remember(_ target: ConnectTarget) {
-        var items = load()
+        var items = stored()
         guard !items.contains(target) else { return }
         items.append(target)
+        // Appended, and capped from the front, because the *stored* list is in
+        // the order hosts were added: the one to lose is the one used longest
+        // ago, which is a question the sidebar's own order can no longer answer.
         if items.count > 12 { items = Array(items.suffix(12)) }
         save(items, to: key)
     }
@@ -32,7 +35,7 @@ enum RecentsStore {
     /// Forgetting a host is what removes its sidebar folder for good; without
     /// this the next launch would seed it straight back in.
     static func forget(_ target: ConnectTarget) {
-        save(load().filter { $0 != target }, to: key)
+        save(stored().filter { $0 != target }, to: key)
         markDetached(target)
         var selections = decodeSelections()
         selections[storageKey(target)] = nil
@@ -44,8 +47,8 @@ enum RecentsStore {
 
     // MARK: - Hosts to dial again
 
-    /// The hosts that were attached when the app was last running, in the order
-    /// they are remembered in, so the next launch can put them back.
+    /// The hosts that were attached when the app was last running, in sidebar
+    /// order, so the next launch can put them back.
     ///
     /// This is deliberately *not* "every remembered host": a host is here
     /// because it was attached, and it leaves only when the user detaches it by
@@ -125,6 +128,12 @@ enum RecentsStore {
     private static func saveSelections(_ selections: [String: Selection]) {
         guard let data = try? JSONEncoder().encode(selections) else { return }
         UserDefaults.standard.set(data, forKey: selectionKey)
+    }
+
+    /// The list as written: the order hosts were added, which is what the cap in
+    /// `remember` needs and what nothing else should read.
+    private static func stored() -> [ConnectTarget] {
+        decode(key)
     }
 
     private static func decode(_ key: String) -> [ConnectTarget] {

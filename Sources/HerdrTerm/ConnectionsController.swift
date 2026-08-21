@@ -78,7 +78,13 @@ final class ConnectionsController: SessionControllerDelegate {
     func connect(_ target: ConnectTarget, completion: ((Error?) -> Void)? = nil) -> Connection {
         let connection = connections.first { $0.target == target } ?? {
             let new = makeConnection(target)
-            connections.append(new)
+            // Into its place in the order, not onto the end: the sidebar's order
+            // is a rule (`local` first, then remotes by name), and a host added
+            // mid-session has to obey it now rather than after a restart.
+            let index = connections.firstIndex {
+                ConnectTarget.precedes(target, $0.target)
+            } ?? connections.count
+            connections.insert(new, at: index)
             return new
         }()
         select(connection.id, dial: false)

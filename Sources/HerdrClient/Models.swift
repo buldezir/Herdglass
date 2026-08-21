@@ -394,3 +394,34 @@ public struct ConnectTarget: Codable, Equatable, Sendable, Hashable {
         host.isEmpty || host == "local" || host == "localhost"
     }
 }
+
+extension ConnectTarget {
+    /// The order hosts are listed in: this Mac first, then every remote by name.
+    ///
+    /// A rule rather than a history, so it is the same on every launch without
+    /// anything having to be stored. `local` leads because it is the one host
+    /// that is not somewhere else — it is where the app is running, and it should
+    /// not be shuffled in among the remotes by whatever letter it starts with.
+    ///
+    /// `localizedStandardCompare` is the Finder's own comparison, which is what
+    /// makes this alphanumeric rather than merely alphabetical: `box2` lands
+    /// before `box10` instead of after it, and case decides nothing. Two targets
+    /// on the same host are then separated by their session, so a host with
+    /// several named sessions keeps its rows in one predictable block.
+    public static func precedes(_ first: ConnectTarget, _ second: ConnectTarget) -> Bool {
+        if first.isLocal != second.isLocal { return first.isLocal }
+        switch first.host.localizedStandardCompare(second.host) {
+        case .orderedAscending: return true
+        case .orderedDescending: return false
+        case .orderedSame:
+            return (first.session ?? "")
+                .localizedStandardCompare(second.session ?? "") == .orderedAscending
+        }
+    }
+}
+
+extension Array where Element == ConnectTarget {
+    public var inHostOrder: [ConnectTarget] {
+        sorted(by: ConnectTarget.precedes)
+    }
+}

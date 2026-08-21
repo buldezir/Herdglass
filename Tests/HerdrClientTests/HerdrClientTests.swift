@@ -527,6 +527,48 @@ private let splitTreeJSON = """
 
 // MARK: - Connect targets
 
+/// The sidebar's host order is a rule, not a history: the same on every launch
+/// whatever order the hosts were added in.
+@Test func localLeadsAndRemotesSortByName() {
+    let targets = [
+        ConnectTarget(host: "workbox"),
+        ConnectTarget(host: "box10"),
+        ConnectTarget(host: "local"),
+        ConnectTarget(host: "Alpha"),
+        ConnectTarget(host: "box2"),
+    ]
+    #expect(
+        targets.inHostOrder.map(\.host) == ["local", "Alpha", "box2", "box10", "workbox"]
+    )
+    // `localhost` and an empty host are the same host as `local`, so they lead too.
+    #expect([ConnectTarget(host: "aaa"), ConnectTarget(host: "localhost")]
+        .inHostOrder.map(\.host) == ["localhost", "aaa"])
+}
+
+/// Alphanumeric, not alphabetical — `box2` before `box10` is the whole
+/// difference, and it is why this is `localizedStandardCompare` and not `<`.
+@Test func hostOrderCountsDigitsRatherThanSpellingThem() {
+    let plain = ["box10", "box2"].sorted()
+    #expect(plain == ["box10", "box2"])
+    let natural = [ConnectTarget(host: "box10"), ConnectTarget(host: "box2")]
+    #expect(natural.inHostOrder.map(\.host) == ["box2", "box10"])
+}
+
+/// Several named sessions on one host stay in one block, in a settled order,
+/// rather than interleaving with anything else.
+@Test func sessionsOnOneHostStayTogether() {
+    let targets = [
+        ConnectTarget(host: "workbox", session: "review"),
+        ConnectTarget(host: "alpha"),
+        ConnectTarget(host: "workbox"),
+        ConnectTarget(host: "workbox", session: "build"),
+    ]
+    #expect(
+        targets.inHostOrder.map(\.displayName)
+            == ["alpha", "workbox", "workbox · build", "workbox · review"]
+    )
+}
+
 @Test func connectTargetLocal() {
     #expect(ConnectTarget(host: "local").isLocal)
     #expect(ConnectTarget(host: "localhost").isLocal)
