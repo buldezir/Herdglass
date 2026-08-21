@@ -77,10 +77,20 @@ To skip the connect sheet, name the target on the command line:
 an Apple Silicon `macos-26` runner: it caches `Vendor/GhosttyKit.xcframework`
 against the `Vendor/ghostty` pin — so libghostty is rebuilt only when the pin
 moves, downloading the Metal toolchain when the runner image lacks it — then
-runs `swift test --filter HerdrClientTests` and `Scripts/release.sh`, and
+runs `Scripts/release.sh` and `swift test --filter HerdrClientTests`, and
 uploads the `.app` as a `ditto` archive so its ad-hoc signature survives the
 round trip. The build is unsigned beyond that ad-hoc identity and not
-notarized; it is the same thing `release.sh` makes locally.
+notarized; it is the same thing `release.sh` makes locally. The app is built
+before the tests run, so a broken test still leaves a downloadable build.
+
+The tests run `--no-parallel` there, and that is not a preference. Swift's
+cooperative pool is one thread per core, `ProcessRunner.run` blocks its caller
+in `group.wait()` until the drains it queued elsewhere finish, and the three
+`processRunner*` tests are enough to take every thread of a 3-core runner's
+pool — leaving nothing to run the drains they are waiting for. It deadlocks,
+and a sample of the wedged process is what proved it. Any machine with no more
+cores than there are blocking tests can do the same, so a `swift test` that
+hangs on a small Mac is this, not the suite being slow.
 
 A run's zip is under **Artifacts** on the run summary, which needs a GitHub
 login to download. Pushing a `v*` tag additionally attaches it to a
