@@ -1,0 +1,144 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    # Apple Silicon: libghostty is built for the host, and the app is arm64-only.
+    # macos-26 rather than macos-15 because ghostty's tip wants a current Xcode
+    # (Metal toolchain, recent SDK), which is also what this app is built with.
+    runs-on: macos-26
+    # A cold libghostty build compiles ghostty with -Doptimize=ReleaseFast.
+    timeout-minutes: 90
+    # Only the Release step needs more than read: it creates the release and
+    # uploads the zip with the job's own GITHUB_TOKEN.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Vendor/ghostty is the pin Scripts/libghostty.sh builds from, and
+          # --check reads its HEAD even when the artifact comes from the cache.
+          submodules: true
+
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+          echo "ghostty pin: $(git -C Vendor/ghostty rev-parse HEAD)"
+
+      - name: Pin
+        id: pin
+        run: echo "ghostty=$(git -C Vendor/ghostty rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Vendor/GhosttyKit.xcframework is not in git; it is reproducible from the
+      # pin, so key the cache on the pin and rebuild only when it moves.
+      - name: Restore libghostty
+        id: libghostty-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            Vendor/GhosttyKit.xcframework
+            Vendor/libghostty.version
+          key: libghostty-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.ghostty }}
+
+      - name: Cache zig
+        if: steps.libghostty-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            Vendor/zig
+            ~/.cache/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.pin.outputs.ghostty }}
+          restore-keys: |
+            zig-${{ runner.os }}-${{ runner.arch }}-
+
+      # ghostty compiles Metal shaders, and the toolchain ships as a separate
+      # Xcode component that the runner image does not always carry.
+      - name: Metal toolchain
+        if: steps.libghostty-cache.outputs.cache-hit != 'true'
+        run: |
+          if xcrun --find metal >/dev/null 2>&1; then
+            echo "metal: $(xcrun --find metal)"
+          else
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      - name: Build libghostty
+        if: steps.libghostty-cache.outputs.cache-hit != 'true'
+        run: ./Scripts/libghostty.sh
+
+      # Says whether what the cache handed us still matches the pin; dev.sh and
+      # release.sh run it too and stop if it does not.
+      - name: Check libghostty
+        run: |
+          ./Scripts/libghostty.sh --check
+          cat Vendor/libghostty.version
+
+      - name: Test
+        run: swift test --filter HerdrClientTests
+
+      - name: Build app
+        run: ./Scripts/release.sh
+
+      # ditto keeps the bundle's symlinks and its ad-hoc signature; `zip` does
+      # not, and upload-artifact would re-zip the tree without them either way.
+      - name: Package
+        run: ditto -c -k --sequesterRsrc --keepParent .build/release-app/Herdglass.app .build/Herdglass.app.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Herdglass-${{ github.sha }}
+          path: .build/Herdglass.app.zip
+          if-no-files-found: error
+
+      # A v* tag publishes the same zip as a Release asset, so a download needs
+      # no GitHub login — an Actions artifact does. Re-running a tag's build
+      # replaces the asset rather than failing on the existing release.
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          NAME="Herdglass-$TAG-macos-arm64.zip"
+          cp .build/Herdglass.app.zip ".build/$NAME"
+          GHOSTTY="$(sed -n 's/^ghostty_ref=//p' Vendor/libghostty.version)"
+          SHA256="$(shasum -a 256 ".build/$NAME" | cut -d' ' -f1)"
+
+          # Built line by line rather than with a heredoc: this block is indented
+          # inside the YAML, and a heredoc would carry that indentation into the
+          # notes, where markdown reads ten leading spaces as a code block.
+          # An ad-hoc signature is per-machine and carries no notary ticket, so
+          # the quarantine step is said here rather than left to Gatekeeper's
+          # "damaged and can't be opened".
+          {
+            echo "Apple Silicon, macOS 14+. Built from \`$GITHUB_SHA\` against ghostty \`$GHOSTTY\`."
+            echo
+            echo '```bash'
+            echo "ditto -x -k $NAME ."
+            echo 'xattr -dr com.apple.quarantine Herdglass.app   # ad-hoc signed, not notarized'
+            echo 'ditto Herdglass.app /Applications/Herdglass.app'
+            echo '```'
+            echo
+            echo 'Run it from a shell — `/Applications/Herdglass.app/Contents/MacOS/Herdglass` —'
+            echo 'for remote hosts: launched from Finder it usually cannot reach `ssh-agent`.'
+            echo
+            echo "sha256: \`$SHA256\`"
+          } > .build/notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" ".build/$NAME" --clobber
+          else
+            gh release create "$TAG" ".build/$NAME" --title "$TAG" --notes-file .build/notes.md
+          fi

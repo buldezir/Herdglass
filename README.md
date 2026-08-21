@@ -71,6 +71,26 @@ To skip the connect sheet, name the target on the command line:
 ./Scripts/dev.sh --run --connect workbox --session agents
 ```
 
+## CI
+
+`.github/workflows/build.yml` builds the app on every push and pull request, on
+an Apple Silicon `macos-26` runner: it caches `Vendor/GhosttyKit.xcframework`
+against the `Vendor/ghostty` pin — so libghostty is rebuilt only when the pin
+moves, downloading the Metal toolchain when the runner image lacks it — then
+runs `swift test --filter HerdrClientTests` and `Scripts/release.sh`, and
+uploads the `.app` as a `ditto` archive so its ad-hoc signature survives the
+round trip. The build is unsigned beyond that ad-hoc identity and not
+notarized; it is the same thing `release.sh` makes locally.
+
+A run's zip is under **Artifacts** on the run summary, which needs a GitHub
+login to download. Pushing a `v*` tag additionally attaches it to a
+[Release](https://github.com/buldezir/Herdglass/releases) as
+`Herdglass-<tag>-macos-arm64.zip`, which does not — with the sha256 and the
+`xattr -dr com.apple.quarantine` line an ad-hoc signed, un-notarized bundle
+needs in the notes. Re-running a tag's build replaces that asset instead of
+failing. GitHub Packages is not an option: it has no generic binary registry,
+only npm/RubyGems/Maven/Gradle/NuGet and the container registry.
+
 ## App icon
 
 The icon is drawn, not stored: `Scripts/appicon.swift` renders it with
