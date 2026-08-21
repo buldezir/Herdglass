@@ -13,6 +13,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/HerdrTerm"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/HerdrTerm.icns "$APP/Contents/Resources/HerdrTerm.icns"
 # Ad-hoc signature: unsigned bundles get a fresh identity on every build, so
 # macOS re-asks for notification permission each time.
 codesign --force --sign - "$APP" >/dev/null

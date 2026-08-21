@@ -28,6 +28,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/HerdrTerm"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/HerdrTerm.icns "$APP/Contents/Resources/HerdrTerm.icns"
 
 # Stamp the commit into CFBundleVersion so a stale /Applications copy is
 # recognisable from About / `mdls`.

@@ -13,6 +13,7 @@ Do not fork or copy [cmux](https://github.com/manaflow-ai/cmux) (AGPL). Renderin
 - `Scripts/libghostty.sh` — build `Vendor/GhosttyKit.xcframework` from the pinned ghostty; `--check` compares it with the pin
 - `Scripts/dev.sh` — build `.build/HerdrTerm.app` and optionally `--run` (extra args pass through)
 - `Scripts/release.sh` — optimized build at `.build/release-app/HerdrTerm.app`, `--install` to `/Applications`, optionally `--run`
+- `Scripts/appicon.swift` — draws `Resources/HerdrTerm.icns` with CoreGraphics; the `.icns` is in git, so this runs only when the icon design changes
 
 Entry: `HerdrTermMain.swift`. Flags: `--bridge` (PTY child for libghostty), `--connect <host>` (skip the connect sheet), `--self-test <host>`, `--show-ghostty-config` (what the app took from the user's ghostty config, and the menu it produced).
 

@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>HerdrTerm</string>
+	<key>CFBundleIconFile</key>
+	<string>HerdrTerm</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.herdr.term</string>
 	<key>CFBundleInfoDictionaryVersion</key>

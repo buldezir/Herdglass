@@ -69,6 +69,29 @@ To skip the connect sheet, name the target on the command line:
 ./Scripts/dev.sh --run --connect workbox --session agents
 ```
 
+## App icon
+
+The icon is drawn, not stored: `Scripts/appicon.swift` renders it with
+CoreGraphics and writes `Resources/HerdrTerm.icns`, which the build scripts copy
+into the bundle. The `.icns` is in git, so a normal build never runs the script —
+only a change to the design does:
+
+```bash
+./Scripts/appicon.swift            # rewrite Resources/HerdrTerm.icns
+./Scripts/appicon.swift --png /tmp/icon.png   # and a 1024px PNG to look at
+```
+
+It is a lead ghost at a `>_` prompt with a small herd behind it, the followers in
+the two colours `StatusStyle` gives a pane that wants looking at — orange for
+`blocked`, blue for an unseen `done`. The bezel-and-phosphor look is a nod to
+libghostty doing the rendering; the artwork is this project's own.
+
+The art fills the canvas edge to edge rather than leaving the usual margin,
+because macOS 26 masks a legacy `.icns` to the icon shape and casts the shadow
+itself — art that reserves its own margin gets inset twice and comes out half
+size. It still draws its own rounded shape, which is what keeps it looking like
+an icon on macOS 14 and 15, where nothing masks it.
+
 ## How remote attach works
 
 `herdr --remote` is **TUI-only** (`herdr --remote HOST workspace list` is rejected). Non-interactive SSH also skips zsh/Homebrew `PATH`, so herdr-term looks for `/opt/homebrew/bin/herdr` (and a few other install locations) on the remote host. It then:
