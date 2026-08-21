@@ -17,6 +17,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# libghostty is not in git: build it once from the pinned ghostty checkout.
+Scripts/libghostty.sh --check || exit 1
+
 swift build -c release --product HerdrTerm
 BIN="$(swift build -c release --show-bin-path)/HerdrTerm"
 APP=".build/release-app/HerdrTerm.app"

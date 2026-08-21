@@ -7,3 +7,6 @@ DerivedData/
 /tmp-herdr-term/
 *.app
 .env
+Vendor/GhosttyKit.xcframework/
+Vendor/zig/
+Vendor/libghostty.version

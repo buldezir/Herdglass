@@ -11,10 +11,14 @@ let package = Package(
         .executable(name: "HerdrTerm", targets: ["HerdrTerm"]),
         .library(name: "HerdrClient", targets: ["HerdrClient"]),
     ],
-    dependencies: [
-        .package(url: "https://github.com/briannadoubt/GhosttyKit.git", exact: "0.8.0"),
-    ],
     targets: [
+        // libghostty, built from the pinned ghostty checkout in Vendor/ghostty
+        // by Scripts/libghostty.sh. Its module map names the module GhosttyKit,
+        // which is what `import GhosttyKit` resolves to.
+        .binaryTarget(
+            name: "GhosttyKit",
+            path: "Vendor/GhosttyKit.xcframework"
+        ),
         .target(
             name: "HerdrClient",
             path: "Sources/HerdrClient"
@@ -23,7 +27,7 @@ let package = Package(
             name: "HerdrTerm",
             dependencies: [
                 "HerdrClient",
-                .product(name: "GhosttyKit", package: "GhosttyKit"),
+                "GhosttyKit",
             ],
             path: "Sources/HerdrTerm",
             linkerSettings: [
@@ -33,6 +37,8 @@ let package = Package(
                 .linkedFramework("CoreText"),
                 .linkedFramework("IOSurface"),
                 .linkedFramework("Metal"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("CoreVideo"),
                 .linkedFramework("UserNotifications"),
                 .linkedLibrary("c++"),
             ]

@@ -1,6 +1,6 @@
 # herdr-term
 
-Native macOS GUI client for remote [Herdr](https://herdr.dev) servers, with a GPU terminal via [libghostty](https://github.com/ghostty-org/ghostty) / [GhosttyKit](https://github.com/briannadoubt/GhosttyKit), attention rings when an agent is `blocked` or has an unseen `done`, and macOS notifications for the ones you are not looking at.
+Native macOS GUI client for remote [Herdr](https://herdr.dev) servers, with a GPU terminal via [libghostty](https://github.com/ghostty-org/ghostty), attention rings when an agent is `blocked` or has an unseen `done`, and macOS notifications for the ones you are not looking at.
 
 The window maps straight onto Herdr's own structure:
 
@@ -15,9 +15,28 @@ Herdr remains the multiplexer; this app does not reimplement panes, agents, or l
 
 ## Requirements
 
-- macOS 14+, Apple Silicon (GhosttyKit 0.8.0 currently ships arm64)
+- macOS 14+, Apple Silicon (libghostty is built for the host, so arm64 here)
 - Local `herdr` on `PATH` (tested with 0.8.2)
 - For remote hosts: working OpenSSH (`ssh <host>` already succeeds) and the key loaded in `ssh-agent` (`ssh-add -l`)
+- To build libghostty: Xcode, its Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`, ~700 MB, once per Xcode) and the ghostty checkout. Zig is downloaded for you at the version ghostty pins.
+
+## Build libghostty
+
+libghostty is not a package dependency: it is built here from the `ghostty`
+commit pinned in `Vendor/ghostty`, and the resulting xcframework is not in git.
+Once per clone, and again whenever that pin moves:
+
+```bash
+git submodule update --init Vendor/ghostty
+./Scripts/libghostty.sh
+```
+
+That takes a while — it compiles ghostty with `-Doptimize=ReleaseFast` — and
+leaves `Vendor/GhosttyKit.xcframework` plus a `Vendor/libghostty.version` note
+of what it was built from. Neither is in git — the pin is the `Vendor/ghostty`
+gitlink, and those two are what your machine made of it.
+`Scripts/libghostty.sh --check` says whether the artifact still matches the pin;
+`dev.sh` and `release.sh` run it first and stop if it does not.
 
 ## Run
 

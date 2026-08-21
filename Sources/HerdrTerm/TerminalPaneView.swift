@@ -14,8 +14,8 @@ final class TerminalPaneView: NSView {
     /// changes, so it has to reach the session and not just libghostty.
     var onActivate: (() -> Void)?
 
-    private var session: GhosttyTerminalSession?
-    private var terminalView: GhosttyTerminalView?
+    private var session: TerminalSession?
+    private var terminalView: TerminalSurfaceView?
     private var currentPaneId: String?
     /// Side channel to the bridge for anything that is not a keystroke.
     private var control: PaneControlChannel?
@@ -118,11 +118,10 @@ final class TerminalPaneView: NSView {
 
     /// The terminal's own colours, on everything this app draws around it.
     ///
-    /// The GhosttyKit view paints its layer with a palette of its own, set in
-    /// `viewDidMoveToWindow` and on every appearance change rather than in
-    /// `updateLayer`, so overwriting it here sticks — and it has to be
-    /// overwritten, or the strip of window padding around the surface is a
-    /// different colour from the terminal in it.
+    /// `TerminalSurfaceView` paints its own layer with the same background, but
+    /// only when it moves window or the appearance changes; a reload has to be
+    /// pushed through here, or the strip of window padding around the surface is
+    /// a different colour from the terminal in it.
     private func applyGhosttyColors() {
         let background = GhosttyRuntime.config.paneBackground
         needsDisplay = true
@@ -178,7 +177,7 @@ final class TerminalPaneView: NSView {
             return
         }
 
-        var launch = GhosttyTerminalLaunchConfiguration()
+        var launch = TerminalSession.Launch()
         launch.command = argv.map(\.shellEscaped).joined(separator: " ")
         launch.environment = [
             "HERDR_TERM_TARGET": paneId,
@@ -193,20 +192,14 @@ final class TerminalPaneView: NSView {
         session.closeHandler = { [weak self] _ in
             self?.handleSessionClosed()
         }
-        // `makeView()` with one handler swapped: the surface renders whatever
-        // herdr sends and holds no scrollback of its own, so a wheel event has
-        // to become `terminal.scroll` on the server instead.
-        let view = GhosttyTerminalView()
-        var handlers = session.makeViewHandlers()
-        handlers.scrollWheel = { [weak self] event in self?.scroll(event) }
+        let view = TerminalSurfaceView(session: session)
+        // The surface renders whatever herdr sends and holds no scrollback of
+        // its own, so a wheel event has to become `terminal.scroll` on the
+        // server instead of scrolling libghostty's empty viewport.
+        view.onScrollWheel = { [weak self] event in self?.scroll(event) }
         // Clicking a pane in a split is how the user moves the active pane, so
         // the click has to be seen here as well as by libghostty.
-        let mouseButton = handlers.mouseButton
-        handlers.mouseButton = { [weak self] button, pressed, event in
-            if pressed, case .left = button { self?.onActivate?() }
-            return mouseButton(button, pressed, event)
-        }
-        view.handlers = handlers
+        view.onPrimaryClick = { [weak self] in self?.onActivate?() }
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: placeholder)
         NSLayoutConstraint.activate([
@@ -221,8 +214,8 @@ final class TerminalPaneView: NSView {
         layoutSubtreeIfNeeded()
         session.attach(to: view)
 
-        // `ghostty_surface_new` reports failure by returning null, which
-        // GhosttyKit passes on as a nil `surface`. Without this the pane just
+        // `ghostty_surface_new` reports failure by returning null, which the
+        // session passes on as a nil `surface`. Without this the pane just
         // renders empty and reads as a terminal that never printed anything.
         guard session.surface != nil else {
             view.removeFromSuperview()
@@ -251,9 +244,9 @@ final class TerminalPaneView: NSView {
         detachedPaneId = paneId
     }
 
-    /// `focus-follows-mouse`. Kept on this view rather than on the GhosttyKit
-    /// one, which has tracking areas of its own for the terminal's mouse
-    /// reporting; entering a pane has to reach Herdr, not just the surface.
+    /// `focus-follows-mouse`. Kept on this view rather than on the surface one,
+    /// which has tracking areas of its own for the terminal's mouse reporting;
+    /// entering a pane has to reach Herdr, not just the surface.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea {

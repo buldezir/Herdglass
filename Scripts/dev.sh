@@ -2,6 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# libghostty is not in git: build it once from the pinned ghostty checkout.
+Scripts/libghostty.sh --check || exit 1
+
 swift build --product HerdrTerm
 BIN="$(swift build --show-bin-path)/HerdrTerm"
 APP=".build/HerdrTerm.app"

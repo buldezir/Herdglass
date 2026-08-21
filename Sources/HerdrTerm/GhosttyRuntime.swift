@@ -15,13 +15,19 @@ enum GhosttyRuntime {
     private static var timer: Timer?
     private static var attachedPanes = 0
 
-    /// libghostty is initialized once, and deliberately not through
-    /// `GhosttyTerminalHost.shared`: that convenience injects a theme of its own
-    /// (see `loadedConfig`), and `ghostty_init` must not run twice.
-    private static let terminalHost: GhosttyTerminalHost? = {
+    /// libghostty is initialized once, in this order: the resources directory
+    /// has to be in the environment before a theme is resolved, `ghostty_init`
+    /// before any other libghostty call, and the config before the app, because
+    /// `ghostty_app_new` reads it.
+    private static let terminalHost: TerminalHost? = {
         exportResourcesDir()
-        guard let host = try? GhosttyTerminalHost(loadDefaultTheme: false) else { return nil }
-        loadConfig(into: host)
+        guard TerminalHost.initializeLibrary(), let config = newConfig() else { return nil }
+        guard let host = try? TerminalHost(config: config) else {
+            ghostty_config_free(config)
+            return nil
+        }
+        loadedConfig = config
+        snapshot = GhosttyConfig(config)
         return host
     }()
 
@@ -84,44 +90,28 @@ enum GhosttyRuntime {
         return snapshot
     }
 
-    static var host: GhosttyTerminalHost? { terminalHost }
+    static var host: TerminalHost? { terminalHost }
 
     static var unavailableReason: String? {
         host == nil ? "libghostty failed to initialize. Check `ghostty +show-config` for a bad config." : nil
     }
 
     /// Load `~/.config/ghostty/config` (and the Application Support copy) the
-    /// way ghostty itself does, and make it the app's config.
-    ///
-    /// This app loads the config rather than letting GhosttyKit do it, because
-    /// `GhosttyTerminalHost(loadDefaultTheme: true)` writes a Rosé Pine theme
-    /// file into Application Support and loads it *after* the user's config
-    /// whenever that config has no `theme =` line — which silently overrides
-    /// `background`, `foreground`, `palette`, `background-opacity` and
-    /// `background-blur` for everyone who set colours without naming a theme.
-    /// Since the whole point is to look like the user's ghostty, we skip it and
-    /// fall back to ghostty's own defaults instead.
+    /// way ghostty itself does. Nothing of this app's own is injected: no theme,
+    /// no colours, no defaults that disagree with ghostty's — the whole point is
+    /// to look like the user's ghostty, and anything added here would silently
+    /// override `background`, `foreground` or `palette` for everyone who set
+    /// colours without naming a theme.
     ///
     /// CLI args are deliberately not loaded: our argv is `--connect`/`--bridge`,
     /// not ghostty flags, and `ghostty_config_load_cli_args` would only collect
     /// diagnostics about them.
-    @discardableResult
-    private static func loadConfig(into host: GhosttyTerminalHost) -> Bool {
-        guard let config = ghostty_config_new() else { return false }
+    private static func newConfig() -> ghostty_config_t? {
+        guard let config = ghostty_config_new() else { return nil }
         ghostty_config_load_default_files(config)
         ghostty_config_load_recursive_files(config)
         ghostty_config_finalize(config)
-
-        if let app = host.app {
-            ghostty_app_update_config(app, config)
-        }
-        let previous = loadedConfig
-        loadedConfig = config
-        snapshot = GhosttyConfig(config)
-        if let previous {
-            ghostty_config_free(previous)
-        }
-        return true
+        return config
     }
 
     /// Point libghostty at the command a new surface should run.
@@ -132,10 +122,11 @@ enum GhosttyRuntime {
     /// the pane used to show a fresh local zsh instead of the Herdr pane. It is
     /// not an ABI mismatch — `working_directory`, the field right before it in
     /// the same struct, is honoured, and the pointer is non-null at the
-    /// `ghostty_surface_new` call — and it is not version specific: both the
-    /// pinned 0.8.0 libghostty and a rebuild from ghostty `54ac5fd21` drop it,
-    /// along with `env_vars`. Hence `BridgeOptions.argv`: the pane has to ride
-    /// on the command line, since the surface environment is dropped too.
+    /// `ghostty_surface_new` call — and it is not version specific: GhosttyKit
+    /// 0.8.0's libghostty and every rebuild since, up to the commit pinned in
+    /// `Vendor/libghostty.version`, all drop it along with `env_vars`. Hence
+    /// `BridgeOptions.argv`: the pane has to ride on the command line, since the
+    /// surface environment is dropped too.
     ///
     /// The clone is taken from the config we loaded, so the user's own
     /// `~/.config/ghostty/config` and theme survive. libghostty clones the
@@ -170,7 +161,7 @@ enum GhosttyRuntime {
 
     /// Push the current config onto a surface that already exists. Called after
     /// a reload; a new surface gets it from the app config instead.
-    static func apply(to session: GhosttyTerminalSession) {
+    static func apply(to session: TerminalSession) {
         guard let loadedConfig else { return }
         session.updateConfig(loadedConfig)
     }
@@ -192,12 +183,20 @@ enum GhosttyRuntime {
         timer = nil
     }
 
-    /// Re-read the config. `GhosttyTerminalHost.reloadConfig` is not used: it
-    /// would re-inject the theme described in `loadConfig(into:)`, and it keeps
-    /// the result in a property we cannot reach.
+    /// Re-read the config and hand it to the app. The replaced config is freed
+    /// only afterwards, because `ghostty_app_update_config` clones what it is
+    /// given rather than taking it over.
     static func reloadConfig() {
-        guard let host else { return }
-        loadConfig(into: host)
+        guard let host, let app = host.app, let config = newConfig() else { return }
+        ghostty_app_update_config(app, config)
+        let previous = loadedConfig
+        loadedConfig = config
+        snapshot = GhosttyConfig(config)
+        if let previous {
+            ghostty_config_free(previous)
+        }
+        // The panes push it onto their own surfaces from the notification, via
+        // `apply(to:)` — only they know whether they still have one.
         NotificationCenter.default.post(name: configDidChangeNotification, object: nil)
     }
 
