@@ -1,5 +1,5 @@
 #!/bin/bash
-# Optimized build of HerdrTerm.app for local use: no notarization, no
+# Optimized build of Herdglass.app for local use: no notarization, no
 # distribution — just the app you keep in /Applications.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -20,15 +20,15 @@ done
 # libghostty is not in git: build it once from the pinned ghostty checkout.
 Scripts/libghostty.sh --check || exit 1
 
-swift build -c release --product HerdrTerm
-BIN="$(swift build -c release --show-bin-path)/HerdrTerm"
-APP=".build/release-app/HerdrTerm.app"
+swift build -c release --product Herdglass
+BIN="$(swift build -c release --show-bin-path)/Herdglass"
+APP=".build/release-app/Herdglass.app"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/HerdrTerm"
+cp "$BIN" "$APP/Contents/MacOS/Herdglass"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
-cp Resources/HerdrTerm.icns "$APP/Contents/Resources/HerdrTerm.icns"
+cp Resources/Herdglass.icns "$APP/Contents/Resources/Herdglass.icns"
 
 # Stamp the commit into CFBundleVersion so a stale /Applications copy is
 # recognisable from About / `mdls`.
@@ -43,7 +43,7 @@ codesign --force --sign - "$APP" >/dev/null
 echo "Built $APP"
 
 if [ "$INSTALL" = 1 ]; then
-  DEST="/Applications/HerdrTerm.app"
+  DEST="/Applications/Herdglass.app"
   rm -rf "$DEST"
   ditto "$APP" "$DEST"
   echo "Installed $DEST"
@@ -52,5 +52,5 @@ fi
 
 if [ "$RUN" = 1 ]; then
   # Launch from this shell so SSH_AUTH_SOCK is inherited; `open` loses it.
-  exec "$APP/Contents/MacOS/HerdrTerm" "$@"
+  exec "$APP/Contents/MacOS/Herdglass" "$@"
 fi

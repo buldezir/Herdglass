@@ -178,7 +178,7 @@ public final class RemoteConnection: @unchecked Sendable {
           exit 1
         fi
         if ! "$HERDR" \(sessionArgs) status server >/dev/null 2>&1; then
-          nohup "$HERDR" \(sessionArgs) server >/tmp/herdr-term-server.log 2>&1 &
+          nohup "$HERDR" \(sessionArgs) server >/tmp/herdglass-server.log 2>&1 &
           sleep 0.8
         fi
         "$HERDR" \(sessionArgs) status server
@@ -251,7 +251,7 @@ public final class RemoteConnection: @unchecked Sendable {
             message = "SSH to \(host) failed."
         }
         if message.contains("Permission denied") || message.lowercased().contains("publickey") {
-            message += "\n\nLoad your key with `ssh-add` first — herdr-term connects with BatchMode, so there is no passphrase prompt."
+            message += "\n\nLoad your key with `ssh-add` first — Herdglass connects with BatchMode, so there is no passphrase prompt."
         }
         return message
     }

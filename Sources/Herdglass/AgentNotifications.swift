@@ -110,7 +110,7 @@ enum AgentNotifications {
     private static func identifier(paneId: String) -> String { "pane-\(paneId)" }
 
     /// `UNUserNotificationCenter.current()` traps in a process that is not an
-    /// app bundle, and `swift run HerdrTerm` is one of the documented ways to
+    /// app bundle, and `swift run Herdglass` is one of the documented ways to
     /// launch this app. Nil there means notifications are simply unavailable.
     private static var center: UNUserNotificationCenter? {
         guard Bundle.main.bundleIdentifier != nil else { return nil }

@@ -28,8 +28,10 @@ enum ChromeMetrics {
     /// cannot absorb an arbitrary multiple.
     static let range: ClosedRange<Double> = 9...20
 
-    static let didChangeNotification = Notification.Name("herdr-term.chrome-metrics-did-change")
+    static let didChangeNotification = Notification.Name("herdglass.chrome-metrics-did-change")
 
+    // Persisted under the pre-Herdglass name on purpose: renaming the key would
+    // drop the saved value on existing installs.
     private static let key = "herdr-term.ui-font-size"
 
     /// The base point size. Never unset: an absent or out-of-range preference

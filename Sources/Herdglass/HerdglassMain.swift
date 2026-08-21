@@ -2,7 +2,7 @@ import AppKit
 import HerdrClient
 
 @main
-enum HerdrTermMain {
+enum HerdglassMain {
     static func main() {
         HerdrProcess.setUp()
         let arguments = Array(CommandLine.arguments.dropFirst())
@@ -57,7 +57,7 @@ enum HerdrTermMain {
             running.activate()
             let ignored = options.target.map { " Ignoring --connect \($0.displayName)." } ?? ""
             FileHandle.standardError.write(Data(
-                "herdr-term is already running (pid \(running.processIdentifier)); brought it to the front.\(ignored)\n".utf8
+                "Herdglass is already running (pid \(running.processIdentifier)); brought it to the front.\(ignored)\n".utf8
             ))
             return
         }

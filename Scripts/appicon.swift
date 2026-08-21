@@ -1,10 +1,10 @@
 #!/usr/bin/env swift
 //
 // The app icon, drawn rather than stored: run this to remake
-// `Resources/HerdrTerm.icns` (which *is* in git, so a normal build never runs
+// `Resources/Herdglass.icns` (which *is* in git, so a normal build never runs
 // this — only a change to the design does).
 //
-//   Scripts/appicon.swift                     # rewrite Resources/HerdrTerm.icns
+//   Scripts/appicon.swift                     # rewrite Resources/Herdglass.icns
 //   Scripts/appicon.swift --png out.png       # also leave a 1024px PNG
 //
 // The picture is the app: a lead ghost at a prompt with a small herd behind it,
@@ -345,7 +345,7 @@ func option(_ name: String) -> String? {
 }
 
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-let icnsPath = option("--icns") ?? root.appendingPathComponent("Resources/HerdrTerm.icns").path
+let icnsPath = option("--icns") ?? root.appendingPathComponent("Resources/Herdglass.icns").path
 
 let icon = drawIcon()
 if let png = option("--png") {
@@ -355,7 +355,7 @@ if let png = option("--png") {
 
 // iconutil wants an .iconset of the sizes macOS actually asks for.
 let iconset = URL(fileURLWithPath: NSTemporaryDirectory())
-    .appendingPathComponent("HerdrTerm-\(ProcessInfo.processInfo.processIdentifier).iconset")
+    .appendingPathComponent("Herdglass-\(ProcessInfo.processInfo.processIdentifier).iconset")
 try! FileManager.default.createDirectory(at: iconset, withIntermediateDirectories: true)
 defer { try? FileManager.default.removeItem(at: iconset) }
 

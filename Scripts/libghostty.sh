@@ -96,7 +96,7 @@ fi
 
 if [ -z "$ZIG" ]; then
   echo "libghostty: downloading zig $ZIG_VERSION ($ZIG_TARGET)"
-  INDEX="$(mktemp -t herdr-zig-index)"
+  INDEX="$(mktemp -t herdglass-zig-index)"
   trap 'rm -f "$INDEX"' EXIT
   curl -fsSL https://ziglang.org/download/index.json -o "$INDEX"
   read -r TARBALL SHASUM <<EOF
@@ -113,7 +113,7 @@ except KeyError:
 PY
 )
 EOF
-  DOWNLOAD="$(mktemp -d -t herdr-zig)"
+  DOWNLOAD="$(mktemp -d -t herdglass-zig)"
   curl -fsSL "$TARBALL" -o "$DOWNLOAD/zig.tar.xz"
   printf '%s  %s\n' "$SHASUM" "$DOWNLOAD/zig.tar.xz" | shasum -a 256 -c - >/dev/null
   mkdir -p "$ZIG_DIR"
@@ -130,7 +130,7 @@ fi
 # Build in a throwaway clone: `zig build` writes macos/ and .zig-cache into the
 # tree it runs in, and the submodule has to stay clean for `--check` to mean
 # anything.
-WORK="$(mktemp -d -t herdr-libghostty)"
+WORK="$(mktemp -d -t herdglass-libghostty)"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 

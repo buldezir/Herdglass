@@ -36,7 +36,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         wireContent()
 
         window.delegate = self
-        window.title = "herdr-term"
+        window.title = "Herdglass"
         window.subtitle = SessionController.State.disconnected.summary
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .automatic
@@ -50,6 +50,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             window.setContentSize(NSSize(width: 1180, height: 760))
             window.center()
         } else {
+            // Frame autosave name kept from before the Herdglass rename so an
+            // existing install reopens at its remembered size and position.
             if !window.setFrameUsingName("HerdrTermMain") {
                 window.setContentSize(NSSize(width: 1180, height: 760))
                 window.center()
@@ -226,7 +228,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     private func buildToolbar() -> NSToolbar {
-        let toolbar = NSToolbar(identifier: "HerdrTermToolbar")
+        let toolbar = NSToolbar(identifier: "HerdglassToolbar")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
@@ -634,7 +636,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.title = GhosttyRuntime.config.title
             ?? pane.flatMap { session?.title(ofPane: $0) }
             ?? session?.selectedSpace.map { session?.title(ofSpace: $0) ?? $0.label }
-            ?? "herdr-term"
+            ?? "Herdglass"
         window.subtitle = subtitle(session: session, pane: pane)
 
         sidebar.apply(buildSidebarModel())

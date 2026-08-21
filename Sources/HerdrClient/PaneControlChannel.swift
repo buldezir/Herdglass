@@ -23,7 +23,7 @@ public final class PaneControlChannel {
     /// Returns nil when the FIFO cannot be made; the pane then simply has no
     /// control channel, which costs scrolling and nothing else.
     public init?(directory: URL = FileManager.default.temporaryDirectory) {
-        let name = "herdr-term-\(UUID().uuidString.prefix(8)).ctl"
+        let name = "herdglass-\(UUID().uuidString.prefix(8)).ctl"
         let url = directory.appendingPathComponent(name)
         guard mkfifo(url.path, 0o600) == 0 else { return nil }
         // O_RDWR, not O_WRONLY: the bridge has not opened its end yet, and a

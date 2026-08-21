@@ -76,7 +76,7 @@ public enum ControlBridge {
         let options = BridgeOptions(arguments: arguments)
         let target = options.target
         guard !target.isEmpty else {
-            fputs("herdr-term-bridge: --target <pane> is required\n", stderr)
+            fputs("herdglass-bridge: --target <pane> is required\n", stderr)
             exit(2)
         }
         let herdr = options.herdrBinary ?? HerdrPaths.localHerdrBinary()
@@ -105,7 +105,7 @@ public enum ControlBridge {
         do {
             try proc.run()
         } catch {
-            fputs("herdr-term-bridge: failed to spawn herdr: \(error)\n", stderr)
+            fputs("herdglass-bridge: failed to spawn herdr: \(error)\n", stderr)
             exit(1)
         }
 
@@ -206,7 +206,7 @@ private final class BridgeIO: @unchecked Sendable {
         // because the other is idle.
         let fd = open(path, O_RDWR | O_NONBLOCK)
         guard fd >= 0 else {
-            fputs("herdr-term-bridge: cannot open control pipe \(path)\n", stderr)
+            fputs("herdglass-bridge: cannot open control pipe \(path)\n", stderr)
             return
         }
         let commands = LineBuffer()

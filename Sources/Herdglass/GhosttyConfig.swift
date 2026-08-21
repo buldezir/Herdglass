@@ -444,7 +444,7 @@ extension NSColor {
 extension GhosttyConfig {
     /// What the app took from the ghostty config, for `--show-ghostty-config`.
     /// The counterpart to `ghostty +show-config`: that lists what ghostty read,
-    /// this lists the subset herdr-term acts on.
+    /// this lists the subset Herdglass acts on.
     var summary: String {
         var lines: [String] = []
         func row(_ key: String, _ value: String) {

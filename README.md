@@ -1,4 +1,4 @@
-# herdr-term
+# Herdglass
 
 Native macOS GUI client for remote [Herdr](https://herdr.dev) servers, with a GPU terminal via [libghostty](https://github.com/ghostty-org/ghostty), attention rings when an agent is `blocked` or has an unseen `done`, and macOS notifications for the ones you are not looking at.
 
@@ -47,7 +47,7 @@ chmod +x Scripts/dev.sh
 
 `--run` starts the app from your shell so `SSH_AUTH_SOCK` is inherited. Double-clicking the `.app` (or `open`) often cannot talk to `ssh-agent`.
 
-Or `swift run HerdrTerm`.
+Or `swift run Herdglass`.
 
 For a build you keep around, `Scripts/release.sh` compiles with optimizations and
 stamps the commit into `CFBundleVersion`; `--install` copies it to `/Applications`:
@@ -72,12 +72,12 @@ To skip the connect sheet, name the target on the command line:
 ## App icon
 
 The icon is drawn, not stored: `Scripts/appicon.swift` renders it with
-CoreGraphics and writes `Resources/HerdrTerm.icns`, which the build scripts copy
+CoreGraphics and writes `Resources/Herdglass.icns`, which the build scripts copy
 into the bundle. The `.icns` is in git, so a normal build never runs the script —
 only a change to the design does:
 
 ```bash
-./Scripts/appicon.swift            # rewrite Resources/HerdrTerm.icns
+./Scripts/appicon.swift            # rewrite Resources/Herdglass.icns
 ./Scripts/appicon.swift --png /tmp/icon.png   # and a 1024px PNG to look at
 ```
 
@@ -94,13 +94,13 @@ an icon on macOS 14 and 15, where nothing masks it.
 
 ## How remote attach works
 
-`herdr --remote` is **TUI-only** (`herdr --remote HOST workspace list` is rejected). Non-interactive SSH also skips zsh/Homebrew `PATH`, so herdr-term looks for `/opt/homebrew/bin/herdr` (and a few other install locations) on the remote host. It then:
+`herdr --remote` is **TUI-only** (`herdr --remote HOST workspace list` is rejected). Non-interactive SSH also skips zsh/Homebrew `PATH`, so Herdglass looks for `/opt/homebrew/bin/herdr` (and a few other install locations) on the remote host. It then:
 
 1. Opens an SSH ControlMaster to the target (`BatchMode`, so keys must already be in the agent)
 2. Ensures `herdr server` is running on the remote host (installs nothing; the binary must already be there)
 3. Forwards the remote Unix API socket advertised by `herdr status server`
 4. Speaks Herdr's NDJSON socket API (`session.snapshot`, `events.subscribe`, `pane.focus`)
-5. Renders every pane of the selected tab by spawning one `HerdrTerm --bridge --target <pane> …` per pane, each running `herdr terminal session control <pane> --takeover` and copying `terminal.frame` ANSI bytes into libghostty
+5. Renders every pane of the selected tab by spawning one `Herdglass --bridge --target <pane> …` per pane, each running `herdr terminal session control <pane> --takeover` and copying `terminal.frame` ANSI bytes into libghostty
 6. Reads the tab's split tree from `layout.export` and builds it out of nested split views; dragging a divider sends `layout.set_split_ratio`
 
 Frame / control JSON (Herdr 0.8.2):
@@ -127,7 +127,7 @@ have already answered.
 
 This is Herdr's own notion of a notification — what `[ui.toast] delivery` in
 `config.toml` delivers as a TUI toast — taken by the client that has an OS to
-hand it to. Turn it off in **herdr-term → Settings…**.
+hand it to. Turn it off in **Herdglass → Settings…**.
 
 ## Settings
 
@@ -159,7 +159,7 @@ panes.
 
 The terminal is libghostty, so it already reads `~/.config/ghostty/config` (or
 `~/Library/Application Support/com.mitchellh.ghostty/config`) for fonts, colours,
-themes and everything it renders. herdr-term reads the rest of that file too, for
+themes and everything it renders. Herdglass reads the rest of that file too, for
 the settings that describe a window rather than a terminal — you configure this
 app by configuring ghostty:
 
@@ -181,7 +181,7 @@ app by configuring ghostty:
 To see exactly what arrived:
 
 ```bash
-swift build --product HerdrTerm && .build/debug/HerdrTerm --show-ghostty-config
+swift build --product Herdglass && .build/debug/Herdglass --show-ghostty-config
 ```
 
 Anything ghostty owns that Herdr owns here instead — splits, zoom, scrollback,
@@ -215,7 +215,7 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌘,` / `⇧⌘,` | Open / reload the ghostty config |
 
 `⌘,` is ghostty's own `open_config` binding, and this app honours it. Settings —
-the app's own window, with the notification switch — is in the herdr-term menu,
+the app's own window, with the notification switch — is in the Herdglass menu,
 and takes `⌘,` only if your ghostty config points `open_config` somewhere else.
 
 Clicking a pane moves the keyboard into it — that is also how the active pane of a split changes, and Herdr is told about it. Arrow keys browse the sidebar without stealing focus. The sidebar is draggable between 180 and 460 pt and its width is remembered.
@@ -239,4 +239,11 @@ Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becom
 
 ## License
 
-MIT. Ghostty/libghostty is MIT. This repo does not vendor [cmux](https://github.com/manaflow-ai/cmux) (AGPL).
+[Business Source License 1.1](LICENSE) — source available, not open source. Non-production use is
+free; production use is allowed too, except for shipping it as a competing commercial terminal,
+multiplexer, or remote-session product. Each version converts to the MIT License on 2030-08-21,
+or four years after that version was first published, whichever comes first.
+
+Ghostty/libghostty and GhosttyKit stay MIT under their own terms — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). This repo does not vendor
+[cmux](https://github.com/manaflow-ai/cmux) (AGPL).

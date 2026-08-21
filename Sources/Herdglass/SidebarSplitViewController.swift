@@ -99,6 +99,8 @@ final class SidebarSplitViewController: NSSplitViewController {
 /// Sidebar width across launches. Separate from AppKit's split view autosave,
 /// which cannot be used here.
 enum SidebarWidthStore {
+    // Persisted under the pre-Herdglass name on purpose: renaming the key would
+    // drop the saved value on existing installs.
     private static let key = "herdr-term.sidebarWidth"
 
     static func load() -> CGFloat? {

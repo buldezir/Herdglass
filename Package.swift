@@ -3,12 +3,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "herdr-term",
+    name: "Herdglass",
     platforms: [
         .macOS(.v14),
     ],
     products: [
-        .executable(name: "HerdrTerm", targets: ["HerdrTerm"]),
+        .executable(name: "Herdglass", targets: ["Herdglass"]),
         .library(name: "HerdrClient", targets: ["HerdrClient"]),
     ],
     targets: [
@@ -24,12 +24,12 @@ let package = Package(
             path: "Sources/HerdrClient"
         ),
         .executableTarget(
-            name: "HerdrTerm",
+            name: "Herdglass",
             dependencies: [
                 "HerdrClient",
                 "GhosttyKit",
             ],
-            path: "Sources/HerdrTerm",
+            path: "Sources/Herdglass",
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon"),

@@ -4,7 +4,7 @@ import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// The window. There is exactly one — see `HerdrTermMain` for the other
+    /// The window. There is exactly one — see `HerdglassMain` for the other
     /// half of that rule, the one that keeps a second *process* from opening a
     /// second one.
     private var main: MainWindowController?
@@ -166,8 +166,8 @@ enum MainMenu {
     }
 
     private static func app() -> NSMenu {
-        let menu = NSMenu(title: "herdr-term")
-        menu.addItem(withTitle: "About herdr-term", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        let menu = NSMenu(title: "Herdglass")
+        menu.addItem(withTitle: "About Herdglass", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: ",")
         menu.addItem(.separator())
@@ -183,12 +183,12 @@ enum MainMenu {
         menu.addItem(services)
         menu.addItem(.separator())
 
-        menu.addItem(withTitle: "Hide herdr-term", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        menu.addItem(withTitle: "Hide Herdglass", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         let hideOthers = menu.addItem(withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)), keyEquivalent: "h")
         hideOthers.keyEquivalentModifierMask = [.command, .option]
         menu.addItem(withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)), keyEquivalent: "")
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit herdr-term", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(withTitle: "Quit Herdglass", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
             .ghostty(.quit)
         return menu
     }

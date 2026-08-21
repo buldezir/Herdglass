@@ -10,7 +10,7 @@ import HerdrClient
 enum GhosttyRuntime {
     /// Posted after the config has been (re)loaded, so the window chrome and
     /// the panes can re-read `GhosttyRuntime.config`.
-    static let configDidChangeNotification = Notification.Name("HerdrTermGhosttyConfigDidChange")
+    static let configDidChangeNotification = Notification.Name("HerdglassGhosttyConfigDidChange")
 
     private static var timer: Timer?
     private static var attachedPanes = 0
@@ -136,7 +136,7 @@ enum GhosttyRuntime {
         guard let host, let app = host.app, let base = loadedConfig, !argv.isEmpty else { return false }
         let command = argv.map(\.shellEscaped).joined(separator: " ")
         let file = FileManager.default.temporaryDirectory
-            .appendingPathComponent("herdr-term-command-\(ProcessInfo.processInfo.processIdentifier).ghostty")
+            .appendingPathComponent("herdglass-command-\(ProcessInfo.processInfo.processIdentifier).ghostty")
         // `shell:` is explicit rather than relying on the default, so a path
         // containing a colon can never be read as a `direct:`-style prefix.
         guard (try? "command = shell:\(command)\n".write(to: file, atomically: true, encoding: .utf8)) != nil,

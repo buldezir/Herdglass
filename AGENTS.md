@@ -1,27 +1,29 @@
-# herdr-term
+# Herdglass
 
 Native macOS AppKit GUI client for remote [Herdr](https://herdr.dev) servers. The chrome is cmux-like (sidebar, attention rings, GPU terminal) and maps 1:1 onto Herdr's own nouns: **sidebar folders are hosts, their children are spaces (Herdr workspaces), the strip above the terminal is the space's tabs, and a tab's panes are drawn as splits.** Herdr stays the multiplexer; this app owns no panes, agents, or layouts of its own — it renders what the server reports and asks the server to change it.
 
-Do not fork or copy [cmux](https://github.com/manaflow-ai/cmux) (AGPL). Rendering uses [libghostty](https://github.com/ghostty-org/ghostty) (MIT), built by `Scripts/libghostty.sh` from the commit pinned in `Vendor/ghostty` and linked as the `GhosttyKit` binary target. The AppKit glue in `Sources/HerdrTerm/Ghostty/` started as [GhosttyKit](https://github.com/briannadoubt/GhosttyKit) (MIT) and is ours now.
+This project is under the [Business Source License 1.1](LICENSE), which is not an open source
+license; do not add dependencies whose terms it cannot absorb. Do not fork or copy
+[cmux](https://github.com/manaflow-ai/cmux) (AGPL). Rendering uses [libghostty](https://github.com/ghostty-org/ghostty) (MIT), built by `Scripts/libghostty.sh` from the commit pinned in `Vendor/ghostty` and linked as the `GhosttyKit` binary target. The AppKit glue in `Sources/Herdglass/Ghostty/` started as [GhosttyKit](https://github.com/briannadoubt/GhosttyKit) (MIT) and is ours now.
 
 ## Layout
 
 - `Sources/HerdrClient/` — SSH attach, Unix JSON-RPC, `terminal session control` bridge, models, split-layout tree (`Layout.swift`)
-- `Sources/HerdrTerm/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`), the chrome's type scale (`ChromeMetrics.swift`), settings window and macOS notifications (`AgentNotifications.swift`)
-- `Sources/HerdrTerm/Ghostty/` — the libghostty glue: `TerminalHost` (the `ghostty_app_t` and its callbacks), `TerminalSession` (one surface), `TerminalSurfaceView` (the `NSView` and its input)
+- `Sources/Herdglass/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`), the chrome's type scale (`ChromeMetrics.swift`), settings window and macOS notifications (`AgentNotifications.swift`)
+- `Sources/Herdglass/Ghostty/` — the libghostty glue: `TerminalHost` (the `ghostty_app_t` and its callbacks), `TerminalSession` (one surface), `TerminalSurfaceView` (the `NSView` and its input)
 - `Tests/HerdrClientTests/` — parsing, framing, and RPC-transport tests
 - `Scripts/libghostty.sh` — build `Vendor/GhosttyKit.xcframework` from the pinned ghostty; `--check` compares it with the pin
-- `Scripts/dev.sh` — build `.build/HerdrTerm.app` and optionally `--run` (extra args pass through)
-- `Scripts/release.sh` — optimized build at `.build/release-app/HerdrTerm.app`, `--install` to `/Applications`, optionally `--run`
-- `Scripts/appicon.swift` — draws `Resources/HerdrTerm.icns` with CoreGraphics; the `.icns` is in git, so this runs only when the icon design changes
+- `Scripts/dev.sh` — build `.build/Herdglass.app` and optionally `--run` (extra args pass through)
+- `Scripts/release.sh` — optimized build at `.build/release-app/Herdglass.app`, `--install` to `/Applications`, optionally `--run`
+- `Scripts/appicon.swift` — draws `Resources/Herdglass.icns` with CoreGraphics; the `.icns` is in git, so this runs only when the icon design changes
 
-Entry: `HerdrTermMain.swift`. Flags: `--bridge` (PTY child for libghostty), `--connect <host>` (skip the connect sheet), `--self-test <host>`, `--show-ghostty-config` (what the app took from the user's ghostty config, and the menu it produced).
+Entry: `HerdglassMain.swift`. Flags: `--bridge` (PTY child for libghostty), `--connect <host>` (skip the connect sheet), `--self-test <host>`, `--show-ghostty-config` (what the app took from the user's ghostty config, and the menu it produced).
 
 ## Architecture
 
 ```
 GUI  --session.snapshot / events.subscribe / pane.focus-->  forwarded herdr.sock (API)
-GUI  --spawns-->  HerdrTerm --bridge  --herdr terminal session control-->  forwarded herdr-client.sock
+GUI  --spawns-->  Herdglass --bridge  --herdr terminal session control-->  forwarded herdr-client.sock
 ```
 
 `herdr --remote` is TUI-only (cannot prefix CLI subcommands). Attach is our SSH ControlMaster:
@@ -30,7 +32,7 @@ GUI  --spawns-->  HerdrTerm --bridge  --herdr terminal session control-->  forwa
 2. Find remote `herdr` at Homebrew/mise/Nix/`~/.local/bin` — non-interactive PATH has no Homebrew
 3. Ensure `herdr server`, parse `socket:` from `herdr status server`
 4. Forward **both** `herdr.sock` (API) and `herdr-client.sock` (direct terminal attach)
-5. Focused pane: Ghostty launches `HerdrTerm --bridge --target <pane> …`, which speaks NDJSON `terminal.frame` / `terminal.input` / `terminal.resize` / `terminal.scroll` / `terminal.release`
+5. Focused pane: Ghostty launches `Herdglass --bridge --target <pane> …`, which speaks NDJSON `terminal.frame` / `terminal.input` / `terminal.resize` / `terminal.scroll` / `terminal.release`
 6. Scroll wheel: the GUI writes `terminal.scroll` to a per-pane FIFO (`PaneControlChannel`, path passed as `--control-pipe`) that the bridge forwards
 
 The app is a ghostty client as much as a Herdr one, so it reads the user's own
@@ -78,7 +80,7 @@ before touching `HerdrRPC` or `SessionController`.
 - **`layout.set_split_ratio` addresses a divider by path, not by id.** `path` is one bool per descent from the tab's root split, `false` into `first` and `true` into `second`; `[]` is the root. `splitRatioPathsAreFirstFalseSecondTrue` pins the mapping, because a wrong path silently resizes a different divider.
 - **A divider ratio may only be published from the drag itself.** `NSSplitView` reports every resize through `didResizeSubviews`, window resizes included — the same trap as the sidebar width. `SplitNodeView` instead reads the ratio after `super.mouseDown` returns, which is exactly the span of the divider's tracking loop, and re-applies the model ratio in `layout()` only when it differs from what was last applied (otherwise the layout pass fights the drag).
 - **Rebuild the pane hierarchy on structure, not on ratios.** `LayoutNode.structureSignature` omits ratios; keying the rebuild on the full tree would tear down and respawn every bridge in the tab on each divider drag. `TerminalPaneView`s are cached by pane id and moved between hierarchies; a pane that left the tree is parked, not torn down.
-- **The per-surface command is global, and that is still safe for several panes.** `GhosttyRuntime.useSurfaceCommand` pushes the bridge command through the *app* config before each `ghostty_surface_new`, so attaching N panes in one pass looks like a race. It is not: `ghostty_app_update_config` takes effect before the next surface is created, and a four-pane split really does produce four bridges with four distinct `--target`s (`pgrep -fl 'HerdrTerm --bridge'`). Attach panes on the main thread, one after another, and do not "optimise" this into anything concurrent.
+- **The per-surface command is global, and that is still safe for several panes.** `GhosttyRuntime.useSurfaceCommand` pushes the bridge command through the *app* config before each `ghostty_surface_new`, so attaching N panes in one pass looks like a race. It is not: `ghostty_app_update_config` takes effect before the next surface is created, and a four-pane split really does produce four bridges with four distinct `--target`s (`pgrep -fl 'Herdglass --bridge'`). Attach panes on the main thread, one after another, and do not "optimise" this into anything concurrent.
 - **`ghostty_config_get` writes through a `void*`, so the Swift type has to match the Zig field.** libghostty decides the type from the config field (`src/config/c_get.zig`): `bool`, `c_uint` for `u8`/`u32`, `c_short` for `i16`, `f64`, `ghostty_config_color_s` for a colour, and `const char*` for both strings *and* enum tags. Read a key into something smaller than it writes and you corrupt the stack, silently. It returns false — writing nothing — for a key the C API does not expose and for an optional that is unset, which is how `split-divider-color` says "derive one". Plain Zig structs with no `cval` are simply unreachable: that is why `mouse-scroll-multiplier` and `config-file` are not honoured, and why `theme` has to be spotted by reading the config text.
 - **The config is `GhosttyRuntime`'s, and nothing else may add to it.** It builds it itself (`ghostty_config_new` → `load_default_files` → `load_recursive_files` → `finalize`) and hands it to `TerminalHost(config:)`, which is why `TerminalHost` has no config loading of its own. This is the one thing the GhosttyKit wrapper was replaced over: its host wrote a Rosé Pine theme into Application Support and loaded it *after* the user's config whenever no file in the ghostty config directory had a `theme =` line, silently overriding `background`, `foreground`, `palette`, `background-opacity` and `background-blur` — so an app reading those back got the library's opinion, not the user's. Anything that injects a default here reintroduces exactly that. `ghostty_config_load_cli_args` stays out too: our argv is `--connect`/`--bridge`, not ghostty flags.
 - **A light/dark `theme` pair cannot be resolved through the C API.** libghostty chooses between the halves with its *conditional* config state, which has no C entry point, so `ghostty_config_get` always answers from the default state — `light`. `background` and `foreground` are then the light half whatever the terminal is drawing, which is why `GhosttyConfig.hasLightDarkTheme` (a text scan of the config for a `theme =` with a comma, colon or equals) switches the chrome to AppKit's semantic colours instead of guessing. The appearance is safe without it: ghostty's own `finalize` rewrites `window-theme = auto` to `system` for a pair (`Config.zig`, "theme specifying light/dark changes window-theme from auto").
@@ -90,7 +92,7 @@ before touching `HerdrRPC` or `SessionController`.
 - Never `FileHandle.write` to a pipe that a child may have closed; EPIPE becomes an ObjC exception and `abort()`s. Use `writeIgnoringBrokenPipe` and keep `HerdrProcess.setUp()` (SIGPIPE ignored) on every entry point.
 - Never read a subprocess pipe only after `waitUntilExit()`; that deadlocks past the ~64 KB pipe buffer. `ProcessRunner` drains both streams concurrently — see `processRunnerSurvivesOutputLargerThanThePipeBuffer`.
 - `LineBuffer` yields `Data`, not `String`. A non-UTF-8 frame must not end the drain loop while complete records are still queued.
-- Launch from a shell (`./Scripts/dev.sh --run` or `swift run HerdrTerm`), not `open` / Finder, or `SSH_AUTH_SOCK` is missing.
+- Launch from a shell (`./Scripts/dev.sh --run` or `swift run Herdglass`), not `open` / Finder, or `SSH_AUTH_SOCK` is missing.
 - libghostty is arm64 macOS 14+ and an unstable C API — the pin is the `Vendor/ghostty` gitlink, and moving it is its own commit, with `Scripts/libghostty.sh` rerun and `--show-ghostty-config` diffed before and after. Building it needs Xcode's Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); zig comes down at the version ghostty pins, which is rarely the one Homebrew has.
 
 ## UI conventions
@@ -118,7 +120,7 @@ before touching `HerdrRPC` or `SessionController`.
 - Pane borders mean two different things: the loud ring is attention (pulsing while blocked), the quiet accent border says which pane of a *split* holds the keyboard. A tab with one pane never draws the quiet one.
 - Only the selected host renders. A pane counts as read when it is on screen, i.e. in the selected tab of the visible host (`SessionController.isVisible`), so a split of four panes clears four attention flags.
 - **A pane off screen says so through macOS, not through a blinking toolbar.** Herdr's own notion of a notification is a background agent changing state, and its config picks the delivery (`[ui.toast] delivery`: an in-app toast, the outer terminal, the OS, or nothing). A GUI client has no toast layer and no outer terminal, so `AgentNotifications` takes the OS route on Herdr's behalf. Three rules keep it quiet, and they are why the toolbar bell is gone rather than merely hidden: notify on the *transition* into `blocked`/`done`, never on a state that is merely still true; skip a reason a pane has already been notified about (`SessionController.notifiedReasons` — Herdr's detection genuinely flaps `blocked → working → blocked` inside a second while an agent redraws its prompt, and the bell flickering at that rate is what the notification replaces); and withdraw the notification the moment the pane is read, so `markRead` and Notification Center say the same thing. One identifier per pane (`pane-<id>`) is what makes the last two possible.
-- **One window, one instance, and both halves are load bearing.** `AppDelegate` holds a single `MainWindowController` and has no action that makes another; `HerdrTermMain` turns a second *process* away by handing the screen back to the `NSRunningApplication` already registered for the bundle. Neither half is enough alone: the Finder refuses a second launch but `open -n` and the binary run out of `.build` do not, and no amount of process checking stops a ⌘N. Two of anything here means two clients dialling the same remembered hosts — two SSH masters and two sets of bridges per host, disagreeing about what Herdr last said. The `--bridge` children exec the same binary and return before the check; they never build an `NSApplication`, so LaunchServices does not register them and they cannot be mistaken for a second app (`--show-ghostty-config` and `--self-test` return before it too, and stay runnable while the app is up). `new_window` and `close_all_windows` are gone from `GhosttyConfig.Action` for the same reason: a keybind cannot move a menu item that does not exist.
+- **One window, one instance, and both halves are load bearing.** `AppDelegate` holds a single `MainWindowController` and has no action that makes another; `HerdglassMain` turns a second *process* away by handing the screen back to the `NSRunningApplication` already registered for the bundle. Neither half is enough alone: the Finder refuses a second launch but `open -n` and the binary run out of `.build` do not, and no amount of process checking stops a ⌘N. Two of anything here means two clients dialling the same remembered hosts — two SSH masters and two sets of bridges per host, disagreeing about what Herdr last said. The `--bridge` children exec the same binary and return before the check; they never build an `NSApplication`, so LaunchServices does not register them and they cannot be mistaken for a second app (`--show-ghostty-config` and `--self-test` return before it too, and stay runnable while the app is up). `new_window` and `close_all_windows` are gone from `GhosttyConfig.Action` for the same reason: a keybind cannot move a menu item that does not exist.
 - **A ghostty *default* does not move a menu item that shipped with a key of its own; a `keybind` the user wrote does.** `ghostty_config_trigger` answers from the merged config and cannot say where a trigger came from, so `GhosttyConfig.isRebound` asks a second, unloaded `ghostty_config_new` for the stock trigger and compares — the same "tell a default from a typed value" problem `quit-after-last-window-closed` gave up on, solved for keybinds because there is a config to diff against. It is what lets ⌥⌘↑/⌥⌘↓ be Previous/Next Space here: ghostty's defaults put `goto_split:up`/`down` on those keys, and this window has spaces in it that ghostty has no action for, so the splits take ⇧⌘arrows instead. An item with *no* built-in key (Open Terminal Config) still takes ghostty's default, which is how ⌘, keeps working. A config that re-types a ghostty default cannot be told from the default, and that is the one case this gets wrong on purpose.
 - Two shortcuts wanted `⌘,`: ghostty's `open_config` default and the macOS Settings key. A duplicate key equivalent in one menu is silently given to whichever item comes first, so `NSMenu.applyGhosttyShortcuts` collects what the keybinds claimed and makes anything else holding that shortcut surrender it — the user's own config wins, and Settings… goes shortcutless unless they move `open_config`. Anything new with a built-in key equivalent inherits that rule for free.
 - libghostty's tick is reference counted by attached panes (`GhosttyRuntime`), not left running at 60 Hz forever.
@@ -135,10 +137,10 @@ before touching `HerdrRPC` or `SessionController`.
 
 ```bash
 swift test --filter HerdrClientTests
-swift build --product HerdrTerm
-.build/debug/HerdrTerm --show-ghostty-config
+swift build --product Herdglass
+.build/debug/Herdglass --show-ghostty-config
 # needs a running herdr server:
-.build/debug/HerdrTerm --self-test local
+.build/debug/Herdglass --self-test local
 ./Scripts/dev.sh --run --connect local
 ```
 
@@ -151,7 +153,7 @@ editing the user's — ghostty honours `XDG_CONFIG_HOME`:
 mkdir -p /tmp/ghosttytest/ghostty
 printf 'background = #101820\nwindow-theme = light\nkeybind = cmd+e=new_split:right\n' \
   > /tmp/ghosttytest/ghostty/config
-XDG_CONFIG_HOME=/tmp/ghosttytest .build/debug/HerdrTerm --show-ghostty-config
+XDG_CONFIG_HOME=/tmp/ghosttytest .build/debug/Herdglass --show-ghostty-config
 ```
 
 A config key that reads back as its default when the file clearly sets it is
@@ -160,7 +162,7 @@ overridden by a theme loaded after it — check `ghostty +show-config` for what
 ghostty itself ended up with.
 
 A pane showing a local shell prompt (rather than the remote pane's content)
-means the bridge never started. `pgrep -f 'HerdrTerm --bridge'` is empty and the
+means the bridge never started. `pgrep -f 'Herdglass --bridge'` is empty and the
 app has a `/usr/bin/login … /bin/zsh` child instead; libghostty's own log
 (`log show --predicate 'subsystem BEGINSWITH "com.mitchellh"'`) shows
 `config: default shell source=env`.
@@ -169,7 +171,7 @@ In a split, every visible pane must have its own bridge with its own
 `--target` and `--control-pipe`:
 
 ```bash
-pgrep -fl 'HerdrTerm --bridge'
+pgrep -fl 'Herdglass --bridge'
 pgrep -fl 'terminal session control'
 ```
 
@@ -235,6 +237,8 @@ Restoring hosts is a two-launch check, and `disconnect` is the half that is easy
 to get wrong:
 
 ```bash
+# The key prefix predates the Herdglass rename and was kept so existing
+# installs keep their state; see the note in RecentsStore.swift.
 defaults read dev.herdr.term herdr-term.attached   # the hosts the next launch dials
 defaults read dev.herdr.term herdr-term.recents    # every host, oldest added first
 ```

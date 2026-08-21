@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleExecutable</key>
-	<string>HerdrTerm</string>
+	<string>Herdglass</string>
 	<key>CFBundleIconFile</key>
-	<string>HerdrTerm</string>
+	<string>Herdglass</string>
 	<key>CFBundleIdentifier</key>
 	<string>dev.herdr.term</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>herdr-term</string>
+	<string>Herdglass</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -27,10 +27,10 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>CFBundleDisplayName</key>
-	<string>herdr-term</string>
+	<string>Herdglass</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>MIT licensed. Terminal rendering by libghostty.</string>
+	<string>(c) 2026 Alexander Arutyunov. Business Source License 1.1. Terminal rendering by libghostty (MIT).</string>
 </dict>
 </plist>

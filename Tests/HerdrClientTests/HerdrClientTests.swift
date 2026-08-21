@@ -133,7 +133,7 @@ import Testing
 /// Herdr reports the agent *kind* on the pane and the name somebody gave it on
 /// `agents` alone, so a title that ignores `agents` can only ever say "claude".
 private func titleSnapshot(
-    workspaceLabel: String = "herdr-term",
+    workspaceLabel: String = "herdglass",
     workspaceTokens: String = "",
     tabLabel: String = "1",
     tabs: String? = nil,
@@ -162,16 +162,16 @@ private func titleSnapshot(
 
 /// A pane at a shell prompt: a directory and the shell's own OSC title, which
 /// is the thing the directory has to beat.
-private func shellPane(cwd: String = "/Users/x/projects/herdr-term") -> String {
+private func shellPane(cwd: String = "/Users/x/projects/herdglass") -> String {
     """
     {"pane_id": "w8:p1", "terminal_id": "t", "workspace_id": "w8", "tab_id": "w8:t1",
      "focused": true, "agent_status": "idle", "revision": 1,
-     "cwd": "\(cwd)", "terminal_title_stripped": "x@mac:~/projects/herdr-term"}
+     "cwd": "\(cwd)", "terminal_title_stripped": "x@mac:~/projects/herdglass"}
     """
 }
 
 /// A pane hosting an agent, as Herdr really reports it: the *kind* only.
-private func agentPane(cwd: String = "/Users/x/projects/herdr-term") -> String {
+private func agentPane(cwd: String = "/Users/x/projects/herdglass") -> String {
     """
     {"pane_id": "w8:p1", "terminal_id": "t", "workspace_id": "w8", "tab_id": "w8:t1",
      "focused": true, "agent_status": "idle", "revision": 1, "agent": "claude",
@@ -187,7 +187,7 @@ private let namedAgent = """
 
 @Test func anUnnamedTabIsNamedAfterWhatIsRunningInIt() throws {
     let shell = try titleSnapshot(panes: shellPane())
-    #expect(shell.title(ofTab: shell.tabs[0]) == "herdr-term")
+    #expect(shell.title(ofTab: shell.tabs[0]) == "herdglass")
 
     let agent = try titleSnapshot(panes: agentPane(), agents: namedAgent)
     #expect(agent.title(ofTab: agent.tabs[0]) == "reviewer")
@@ -210,7 +210,7 @@ private let namedAgent = """
     // The agent belongs to a tab. A space says where, so the row still anchors
     // you in the host when three tabs are doing three different things.
     let agent = try titleSnapshot(panes: agentPane(), agents: namedAgent)
-    #expect(agent.title(ofWorkspace: agent.workspaces[0]) == "herdr-term")
+    #expect(agent.title(ofWorkspace: agent.workspaces[0]) == "herdglass")
 
     // A home directory reads as `~`.
     let home = try titleSnapshot(
@@ -238,15 +238,15 @@ private let namedAgent = """
     // And so does a directory reported only as the space's creation cwd, which
     // is the label's real source once a pane has moved on.
     let token = try titleSnapshot(
-        workspaceLabel: "herdr-term",
-        workspaceTokens: #""cwd": "/Users/x/projects/herdr-term""#,
+        workspaceLabel: "herdglass",
+        workspaceTokens: #""cwd": "/Users/x/projects/herdglass""#,
         panes: agentPane(cwd: "/tmp/scratch")
     )
     #expect(token.title(ofWorkspace: token.workspaces[0]) == "scratch")
 
     // Nothing to go on but the label.
-    let empty = try titleSnapshot(workspaceLabel: "herdr-term", panes: "")
-    #expect(empty.title(ofWorkspace: empty.workspaces[0]) == "herdr-term")
+    let empty = try titleSnapshot(workspaceLabel: "herdglass", panes: "")
+    #expect(empty.title(ofWorkspace: empty.workspaces[0]) == "herdglass")
 }
 
 // MARK: - Tab position
@@ -266,7 +266,7 @@ private let gappyTabs = """
 private let gappyPanes = """
 {"pane_id": "w8:p1", "terminal_id": "t1", "workspace_id": "w8", "tab_id": "w8:t1",
  "focused": true, "agent_status": "idle", "revision": 1, "agent": "claude",
- "cwd": "/Users/x/projects/herdr-term"},
+ "cwd": "/Users/x/projects/herdglass"},
 {"pane_id": "w8:p3", "terminal_id": "t3", "workspace_id": "w8", "tab_id": "w8:t3",
  "focused": true, "agent_status": "idle", "revision": 1, "cwd": "/tmp/scratch"},
 {"pane_id": "w8:p4", "terminal_id": "t4", "workspace_id": "w8", "tab_id": "w8:t4",
@@ -356,10 +356,10 @@ private let gappyPanes = """
     let panes = """
     {"pane_id": "w8:p1", "terminal_id": "t1", "workspace_id": "w8", "tab_id": "w8:t1",
      "focused": false, "agent_status": "idle", "revision": 1, "agent": "claude",
-     "cwd": "/Users/x/projects/herdr-term"},
+     "cwd": "/Users/x/projects/herdglass"},
     {"pane_id": "w8:p2", "terminal_id": "t2", "workspace_id": "w8", "tab_id": "w8:t1",
      "focused": true, "agent_status": "idle", "revision": 1, "agent": "cursor",
-     "cwd": "/Users/x/projects/herdr-term"}
+     "cwd": "/Users/x/projects/herdglass"}
     """
     let agents = """
     {"terminal_id": "t1", "agent_status": "idle", "workspace_id": "w8", "tab_id": "w8:t1",
@@ -369,7 +369,7 @@ private let gappyPanes = """
     """
     let snapshot = try titleSnapshot(panes: panes, agents: agents)
     #expect(snapshot.title(ofTab: snapshot.tabs[0]) == "second")
-    #expect(snapshot.title(ofWorkspace: snapshot.workspaces[0]) == "herdr-term")
+    #expect(snapshot.title(ofWorkspace: snapshot.workspaces[0]) == "herdglass")
 }
 
 @Test func homePathsAbbreviate() {
@@ -941,14 +941,14 @@ private let emptySnapshotJSON = """
             "--target", "w4:p1",
             "--socket", "/tmp/ht/herdr.sock",
             "--herdr-bin", "/opt/homebrew/bin/herdr",
-            "--control-pipe", "/tmp/herdr-term-ab.ctl",
+            "--control-pipe", "/tmp/herdglass-ab.ctl",
         ],
         environment: [:]
     )
     #expect(options.target == "w4:p1")
     #expect(options.socketPath == "/tmp/ht/herdr.sock")
     #expect(options.herdrBinary == "/opt/homebrew/bin/herdr")
-    #expect(options.controlPipe == "/tmp/herdr-term-ab.ctl")
+    #expect(options.controlPipe == "/tmp/herdglass-ab.ctl")
 }
 
 /// libghostty drops a surface's `env_vars`, which is why the arguments exist at
@@ -991,16 +991,16 @@ private let emptySnapshotJSON = """
 /// directory with a space in it.
 @Test func bridgeArgvQuotesForTheShell() {
     let argv = BridgeOptions.argv(
-        executablePath: "/Applications/My Apps/HerdrTerm",
+        executablePath: "/Applications/My Apps/Herdglass",
         target: "w4:p1",
         socketPath: "/tmp/ht 1/herdr.sock",
         herdrBinary: "/opt/homebrew/bin/herdr",
         controlPipe: nil
     )
-    #expect(argv.first == "/Applications/My Apps/HerdrTerm")
+    #expect(argv.first == "/Applications/My Apps/Herdglass")
     #expect(!argv.contains("--control-pipe"))
     let command = argv.map(\.shellEscaped).joined(separator: " ")
-    #expect(command.hasPrefix("'/Applications/My Apps/HerdrTerm' '--bridge'"))
+    #expect(command.hasPrefix("'/Applications/My Apps/Herdglass' '--bridge'"))
     #expect(command.contains("'/tmp/ht 1/herdr.sock'"))
 
     let round = BridgeOptions(arguments: argv, environment: [:])

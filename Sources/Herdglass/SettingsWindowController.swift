@@ -151,7 +151,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func buildDeniedRow() {
-        let warning = label("Turned off for herdr-term in System Settings.", size: 11, weight: .regular)
+        let warning = label("Turned off for Herdglass in System Settings.", size: 11, weight: .regular)
         warning.textColor = .secondaryLabelColor
         let icon = NSImageView(image: NSImage(
             systemSymbolName: "exclamationmark.triangle",

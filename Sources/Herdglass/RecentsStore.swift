@@ -2,6 +2,8 @@ import Foundation
 import HerdrClient
 
 enum RecentsStore {
+    // Persisted under the pre-Herdglass name on purpose: renaming the key would
+    // drop the saved value on existing installs.
     private static let key = "herdr-term.recents"
     private static let attachedKey = "herdr-term.attached"
     private static let selectionKey = "herdr-term.selection"

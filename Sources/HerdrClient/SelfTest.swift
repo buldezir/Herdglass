@@ -6,7 +6,7 @@ public enum SelfTest {
         HerdrProcess.setUp()
         do {
             let target = ConnectTarget(host: host, session: session)
-            fputs("herdr-term self-test: connecting to \(target.displayName)\n", stderr)
+            fputs("Herdglass self-test: connecting to \(target.displayName)\n", stderr)
             let conn = try RemoteConnection(target: target)
             try conn.open()
             fputs("socket \(conn.localSocketPath)\n", stderr)
