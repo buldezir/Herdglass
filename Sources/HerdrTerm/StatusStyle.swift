@@ -40,10 +40,3 @@ enum StatusStyle {
         }
     }
 }
-
-extension String {
-    /// `/Users/me/src/app` reads as `~/src/app` in a 200pt sidebar row.
-    var abbreviatingHome: String {
-        (self as NSString).abbreviatingWithTildeInPath
-    }
-}

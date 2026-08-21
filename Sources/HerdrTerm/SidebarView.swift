@@ -372,7 +372,11 @@ private final class SidebarCell: NSTableCellView {
 
         subtitleLabel.font = .systemFont(ofSize: 10)
         subtitleLabel.textColor = .secondaryLabelColor
-        subtitleLabel.lineBreakMode = .byTruncatingHead
+        // Tail, not head: a space's subtitle is its tabs in order, and the first
+        // one is the one the user is most likely to want. Head truncation was
+        // right when this line was a path — `…/projects/app` keeps the part that
+        // identifies it — and is exactly wrong for a list.
+        subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         icon.symbolConfiguration = .init(pointSize: 11, weight: .regular)

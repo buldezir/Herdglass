@@ -81,6 +81,15 @@ final class SessionController {
         }
     }
 
+    /// A tab this client has just asked the server for and means to land on.
+    ///
+    /// It cannot simply be selected: `selectTab` needs the tab to be in the
+    /// snapshot and a tab that was created a moment ago is not in any snapshot
+    /// yet — nor is the refresh that follows the create necessarily the next one
+    /// to land, because a poll issued before it can answer first. So the
+    /// intention is held until a snapshot actually carries the tab.
+    private var pendingTabId: String?
+
     private var attentionOrder: [String] = []
     /// What each unread pane was last notified about. Herdr's own detection
     /// flaps — a pane can read `blocked`, `working`, `blocked` again inside a
@@ -249,6 +258,10 @@ final class SessionController {
     /// focused, so ⌘-jumping into a space lands on the thing that is asking.
     func selectSpace(_ workspaceId: String) {
         guard let snapshot else { return }
+        // Whatever this client was waiting to land on, this is where it is going
+        // instead — a tab created a second ago must not yank the user off a row
+        // they have since picked themselves.
+        pendingTabId = nil
         selectedWorkspaceId = workspaceId
         if let tab = preferredTab(in: workspaceId, snapshot: snapshot) {
             selectTab(tab.tabId)
@@ -281,6 +294,10 @@ final class SessionController {
 
     func selectTab(_ tabId: String) {
         guard let snapshot, let tab = snapshot.tab(tabId) else { return }
+        // Whatever this client was waiting to land on, this is where it is going
+        // instead — a tab created a second ago must not yank the user off a row
+        // they have since picked themselves.
+        pendingTabId = nil
         selectedWorkspaceId = tab.workspaceId
         selectedTabId = tabId
         if let pane = preferredPane(in: tabId, snapshot: snapshot) {
@@ -297,6 +314,10 @@ final class SessionController {
     /// a pane inside a split never leaves the sidebar pointing somewhere else.
     func selectPane(_ paneId: String) {
         guard let pane = snapshot?.pane(paneId) else { return }
+        // Whatever this client was waiting to land on, this is where it is going
+        // instead — a tab created a second ago must not yank the user off a row
+        // they have since picked themselves.
+        pendingTabId = nil
         selectedTabId = pane.tabId
         selectedWorkspaceId = pane.workspaceId
         selectedPaneId = paneId
@@ -327,9 +348,23 @@ final class SessionController {
         perform { try rpc.focusPane(from: paneId, direction: direction) }
     }
 
+    /// Open a tab and go to it. Herdr focuses it server-side, but this client's
+    /// selection is its own — without landing on it the new tab appears in the
+    /// strip and the window carries on showing the old one.
     func newTab() {
         guard let workspaceId = selectedWorkspaceId, let rpc else { return }
-        perform { _ = try rpc.createTab(workspaceId: workspaceId, focus: true) }
+        perform({ try rpc.createTab(workspaceId: workspaceId, focus: true).tabId }) { session, tabId in
+            session.pendingTabId = tabId
+            session.applyPendingTabSelection()
+        }
+    }
+
+    /// Take the tab this client is waiting for as soon as a snapshot has it.
+    private func applyPendingTabSelection() {
+        guard let tabId = pendingTabId else { return }
+        guard snapshot?.tab(tabId) != nil else { return }
+        pendingTabId = nil
+        selectTab(tabId)
     }
 
     func closeTab(_ tabId: String) {
@@ -355,6 +390,23 @@ final class SessionController {
         work.async { [weak self] in
             try? body()
             DispatchQueue.main.async { self?.refreshSnapshot() }
+        }
+    }
+
+    /// Same, for a request whose answer the caller needs — the id of the thing
+    /// the server just made. `then` runs on the main thread before the snapshot
+    /// that will confirm it, and not at all if the request failed.
+    private func perform<T: Sendable>(
+        _ body: @escaping @Sendable () throws -> T,
+        then completion: @escaping @MainActor (SessionController, T) -> Void
+    ) {
+        work.async { [weak self] in
+            let result = try? body()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let result { completion(self, result) }
+                self.refreshSnapshot()
+            }
         }
     }
 
@@ -398,6 +450,32 @@ final class SessionController {
 
     func panes(inSpace workspaceId: String) -> [PaneInfo] {
         snapshot?.panes.filter { $0.workspaceId == workspaceId } ?? []
+    }
+
+    /// What a space and a tab are called right now — recomputed from the
+    /// snapshot every time, so a title follows the agent or the directory
+    /// inside it without anything having to invalidate a cache.
+    func title(ofSpace space: WorkspaceInfo) -> String {
+        snapshot?.title(ofWorkspace: space) ?? space.label
+    }
+
+    func title(ofTab tab: TabInfo) -> String {
+        snapshot?.title(ofTab: tab) ?? tab.label
+    }
+
+    /// Where a tab sits in its space — what the strip numbers and ⌘1…⌘9 mean.
+    /// Never `TabInfo.number`, which has gaps.
+    func position(ofTab tab: TabInfo) -> Int {
+        snapshot?.position(ofTab: tab) ?? Int(tab.number)
+    }
+
+    /// Every tab in a space, shortest useful form, for the sidebar row.
+    func tabSummaries(inSpace workspaceId: String) -> [String] {
+        snapshot?.tabSummaries(inWorkspace: workspaceId) ?? []
+    }
+
+    func title(ofPane pane: PaneInfo) -> String {
+        snapshot?.paneTitle(pane) ?? pane.displayName
     }
 
     /// Panes of the selected tab in the order the split tree lays them out,
@@ -575,7 +653,7 @@ final class SessionController {
                 notifiedReasons[pane.paneId] = reason
                 AgentNotifications.post(
                     paneId: pane.paneId,
-                    title: pane.displayName,
+                    title: snapshot.paneTitle(pane),
                     subtitle: whereabouts(of: pane),
                     reason: reason
                 )
@@ -593,6 +671,7 @@ final class SessionController {
         layoutTrees = layoutTrees.filter { liveTabs.contains($0.key) }
         layoutPrefetches = layoutPrefetches.filter { liveTabs.contains($0.key) }
 
+        applyPendingTabSelection()
         refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
     }

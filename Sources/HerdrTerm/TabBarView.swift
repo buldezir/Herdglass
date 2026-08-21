@@ -165,26 +165,52 @@ private final class TabItemView: NSView {
         close.contentTintColor = .secondaryLabelColor
         close.target = self
         close.action = #selector(closeTapped)
-        close.isHidden = true
+        // Faded rather than hidden, so it holds its place in the layout — and
+        // disabled with it, because a view at `alphaValue = 0` is still
+        // hit-tested and an invisible close button is a trap.
+        close.alphaValue = 0
+        close.isEnabled = false
 
-        let row = NSStackView(views: [dot, label, paneCount, close])
+        // `dot`, `label` and `paneCount` ride a stack that grows from the
+        // leading edge; `close` is pinned to the trailing edge on its own and is
+        // never hidden, only faded. Both halves matter:
+        //
+        // An `NSStackView` drops a hidden view from its layout, so a `close`
+        // inside it made every tab 17pt wider the moment the pointer touched it
+        // — and shoved every tab after it sideways. And a width that follows the
+        // text made the whole strip shuffle each time a title changed, which is
+        // now, by design, whenever an agent starts or a pane changes directory.
+        let row = NSStackView(views: [dot, label, paneCount])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 5
         row.translatesAutoresizingMaskIntoConstraints = false
+        close.translatesAutoresizingMaskIntoConstraints = false
         addSubview(row)
+        addSubview(close)
 
         NSLayoutConstraint.activate([
             dot.widthAnchor.constraint(equalToConstant: 8),
             dot.heightAnchor.constraint(equalToConstant: 8),
-            close.widthAnchor.constraint(equalToConstant: 12),
             row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: close.leadingAnchor, constant: -4),
             row.centerYAnchor.constraint(equalTo: centerYAnchor),
+            close.widthAnchor.constraint(equalToConstant: 12),
+            close.heightAnchor.constraint(equalToConstant: 12),
+            close.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+            close.centerYAnchor.constraint(equalTo: centerYAnchor),
             heightAnchor.constraint(equalToConstant: 24),
-            widthAnchor.constraint(lessThanOrEqualToConstant: 200),
+            widthAnchor.constraint(equalToConstant: Self.width),
         ])
     }
+
+    /// One width for every tab, so the strip only ever moves when a tab is
+    /// opened or closed — not when a title changes under it and not on hover.
+    /// Wide enough for a number, a status dot, a directory or agent name of
+    /// ordinary length and the close button, and no wider — an unselected tab
+    /// draws no background, so slack past the text reads as a gap rather than
+    /// as a tab.
+    static let width: CGFloat = 134
 
     required init?(coder: NSCoder) { nil }
 
@@ -238,7 +264,9 @@ private final class TabItemView: NSView {
             .clear
         }
         layer?.backgroundColor = background.cgColor
-        close.isHidden = !(isHovering || isSelected)
+        let showsClose = isHovering || isSelected
+        close.alphaValue = showsClose ? 1 : 0
+        close.isEnabled = showsClose
     }
 
     override func viewDidChangeEffectiveAppearance() {

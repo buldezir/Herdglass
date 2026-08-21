@@ -88,6 +88,249 @@ import Testing
     #expect(try pane("{\(base)}").displayName == "w1:p1")
 }
 
+/// The directory beats the shell's own OSC title, which is `user@host:~` and
+/// says nothing a window does not already say.
+@Test func paneDisplayNamePrefersTheDirectoryOverTheTerminalTitle() throws {
+    func pane(_ json: String) throws -> PaneInfo {
+        try JSONDecoder().decode(PaneInfo.self, from: Data(json.utf8))
+    }
+    let base = """
+    "pane_id": "w1:p1", "terminal_id": "t", "workspace_id": "w1", "tab_id": "w1:t1",
+    "focused": false, "agent_status": "idle", "revision": 1
+    """
+    let home = NSHomeDirectory()
+
+    #expect(
+        try pane("""
+        {\(base), "cwd": "/Users/x/projects/app",
+         "terminal_title_stripped": "x@mac:~/app"}
+        """).displayName == "app"
+    )
+    // Where the foreground program is, not where the shell started.
+    #expect(
+        try pane("""
+        {\(base), "cwd": "/Users/x/projects/app", "foreground_cwd": "/Users/x/scratch"}
+        """).displayName == "scratch"
+    )
+    // Home itself has no last component worth taking.
+    #expect(try pane("{\(base), \"cwd\": \"\(home)\"}").displayName == "~")
+    // A remote home does not abbreviate — only this Mac's does — so it falls
+    // through to the last component rather than inventing a `~`.
+    #expect(try pane("{\(base), \"cwd\": \"/home/sasha\"}").displayName == "sasha")
+    // An explicit name still outranks the directory.
+    #expect(
+        try pane("{\(base), \"cwd\": \"/Users/x/app\", \"label\": \"build\"}")
+            .displayName == "build"
+    )
+    // And the OSC title is still the last resort when there is no directory.
+    #expect(
+        try pane("{\(base), \"terminal_title_stripped\": \"vim\"}").displayName == "vim"
+    )
+}
+
+// MARK: - Space and tab titles
+
+/// Herdr reports the agent *kind* on the pane and the name somebody gave it on
+/// `agents` alone, so a title that ignores `agents` can only ever say "claude".
+private func titleSnapshot(
+    workspaceLabel: String = "herdr-term",
+    workspaceTokens: String = "",
+    tabLabel: String = "1",
+    tabs: String? = nil,
+    panes: String,
+    agents: String = ""
+) throws -> SessionSnapshot {
+    let tabsJSON = tabs ?? """
+    {"tab_id": "w8:t1", "workspace_id": "w8", "number": 1, "label": "\(tabLabel)",
+     "focused": true, "pane_count": 1, "agent_status": "idle"}
+    """
+    let json = """
+    {
+      "version": "0.8.2", "protocol": 20,
+      "workspaces": [{
+        "workspace_id": "w8", "number": 3, "label": "\(workspaceLabel)", "focused": true,
+        "pane_count": 1, "tab_count": 1, "active_tab_id": "w8:t1", "agent_status": "idle",
+        "tokens": {\(workspaceTokens)}
+      }],
+      "tabs": [\(tabsJSON)],
+      "panes": [\(panes)],
+      "agents": [\(agents)]
+    }
+    """
+    return try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+}
+
+/// A pane at a shell prompt: a directory and the shell's own OSC title, which
+/// is the thing the directory has to beat.
+private func shellPane(cwd: String = "/Users/x/projects/herdr-term") -> String {
+    """
+    {"pane_id": "w8:p1", "terminal_id": "t", "workspace_id": "w8", "tab_id": "w8:t1",
+     "focused": true, "agent_status": "idle", "revision": 1,
+     "cwd": "\(cwd)", "terminal_title_stripped": "x@mac:~/projects/herdr-term"}
+    """
+}
+
+/// A pane hosting an agent, as Herdr really reports it: the *kind* only.
+private func agentPane(cwd: String = "/Users/x/projects/herdr-term") -> String {
+    """
+    {"pane_id": "w8:p1", "terminal_id": "t", "workspace_id": "w8", "tab_id": "w8:t1",
+     "focused": true, "agent_status": "idle", "revision": 1, "agent": "claude",
+     "cwd": "\(cwd)", "terminal_title_stripped": "Claude Code"}
+    """
+}
+
+/// The name lives here and nowhere else — `panes` carries only `agent`.
+private let namedAgent = """
+{"terminal_id": "t", "agent_status": "idle", "workspace_id": "w8", "tab_id": "w8:t1",
+ "pane_id": "w8:p1", "focused": true, "revision": 1, "agent": "claude", "name": "reviewer"}
+"""
+
+@Test func anUnnamedTabIsNamedAfterWhatIsRunningInIt() throws {
+    let shell = try titleSnapshot(panes: shellPane())
+    #expect(shell.title(ofTab: shell.tabs[0]) == "herdr-term")
+
+    let agent = try titleSnapshot(panes: agentPane(), agents: namedAgent)
+    #expect(agent.title(ofTab: agent.tabs[0]) == "reviewer")
+
+    // Without a name on `agents`, the kind is all there is.
+    let unnamed = try titleSnapshot(panes: agentPane())
+    #expect(unnamed.title(ofTab: unnamed.tabs[0]) == "claude")
+}
+
+@Test func aRenamedTabKeepsItsLabel() throws {
+    let renamed = try titleSnapshot(tabLabel: "build", panes: agentPane(), agents: namedAgent)
+    #expect(renamed.title(ofTab: renamed.tabs[0]) == "build")
+
+    // A tab with no panes left has nothing else to be called.
+    let empty = try titleSnapshot(tabLabel: "1", panes: "")
+    #expect(empty.title(ofTab: empty.tabs[0]) == "1")
+}
+
+@Test func aSpaceIsNamedAfterWhereItIs() throws {
+    // The agent belongs to a tab. A space says where, so the row still anchors
+    // you in the host when three tabs are doing three different things.
+    let agent = try titleSnapshot(panes: agentPane(), agents: namedAgent)
+    #expect(agent.title(ofWorkspace: agent.workspaces[0]) == "herdr-term")
+
+    // A home directory reads as `~`.
+    let home = try titleSnapshot(
+        workspaceLabel: "~",
+        panes: agentPane(cwd: NSHomeDirectory()),
+        agents: namedAgent
+    )
+    #expect(home.title(ofWorkspace: home.workspaces[0]) == "~")
+}
+
+/// A name somebody typed is not Herdr's to lose — and unlike a tab's, a space's
+/// default label is a directory, so "chosen" means "matches no directory this
+/// space is in".
+@Test func aChosenSpaceLabelOutranksTheDirectory() throws {
+    let named = try titleSnapshot(workspaceLabel: "backend", panes: agentPane(cwd: "/tmp/scratch"))
+    #expect(named.title(ofWorkspace: named.workspaces[0]) == "backend")
+
+    // The full abbreviated path counts as Herdr's too, not just the tail.
+    let path = try titleSnapshot(
+        workspaceLabel: "~/projects/app",
+        panes: agentPane(cwd: "\(NSHomeDirectory())/projects/app")
+    )
+    #expect(path.title(ofWorkspace: path.workspaces[0]) == "app")
+
+    // And so does a directory reported only as the space's creation cwd, which
+    // is the label's real source once a pane has moved on.
+    let token = try titleSnapshot(
+        workspaceLabel: "herdr-term",
+        workspaceTokens: #""cwd": "/Users/x/projects/herdr-term""#,
+        panes: agentPane(cwd: "/tmp/scratch")
+    )
+    #expect(token.title(ofWorkspace: token.workspaces[0]) == "scratch")
+
+    // Nothing to go on but the label.
+    let empty = try titleSnapshot(workspaceLabel: "herdr-term", panes: "")
+    #expect(empty.title(ofWorkspace: empty.workspaces[0]) == "herdr-term")
+}
+
+// MARK: - Tab position
+
+/// Two tabs of a space Herdr has renumbered: `number` keeps the gap a closed
+/// tab left behind, `label` does not. Reading a label against `number` is how
+/// every tab but the first stopped following what was running in it.
+private let gappyTabs = """
+{"tab_id": "w8:t1", "workspace_id": "w8", "number": 1, "label": "1",
+ "focused": false, "pane_count": 1, "agent_status": "idle"},
+{"tab_id": "w8:t3", "workspace_id": "w8", "number": 3, "label": "2",
+ "focused": true, "pane_count": 1, "agent_status": "idle"},
+{"tab_id": "w8:t4", "workspace_id": "w8", "number": 4, "label": "docs",
+ "focused": false, "pane_count": 1, "agent_status": "idle"}
+"""
+
+private let gappyPanes = """
+{"pane_id": "w8:p1", "terminal_id": "t1", "workspace_id": "w8", "tab_id": "w8:t1",
+ "focused": true, "agent_status": "idle", "revision": 1, "agent": "claude",
+ "cwd": "/Users/x/projects/herdr-term"},
+{"pane_id": "w8:p3", "terminal_id": "t3", "workspace_id": "w8", "tab_id": "w8:t3",
+ "focused": true, "agent_status": "idle", "revision": 1, "cwd": "/tmp/scratch"},
+{"pane_id": "w8:p4", "terminal_id": "t4", "workspace_id": "w8", "tab_id": "w8:t4",
+ "focused": true, "agent_status": "idle", "revision": 1, "cwd": "/Users/x/notes"}
+"""
+
+@Test func tabPositionIgnoresTheGapsInHerdrsNumbering() throws {
+    let snapshot = try titleSnapshot(tabs: gappyTabs, panes: gappyPanes)
+    let tabs = snapshot.tabs(in: "w8")
+    #expect(tabs.map { snapshot.position(ofTab: $0) } == [1, 2, 3])
+    // Position is what Herdr's own labels say, which is the whole point.
+    #expect(tabs.prefix(2).map(\.label) == ["1", "2"])
+    #expect(tabs.map(\.number) == [1, 3, 4])
+}
+
+/// The bug this fixes: `w8:t3` is labelled "2" and numbered 3, so comparing the
+/// two read as "somebody named this tab" and it never took a title again.
+@Test func aTabPastTheFirstStillFollowsWhatIsRunningInIt() throws {
+    let snapshot = try titleSnapshot(tabs: gappyTabs, panes: gappyPanes, agents: namedAgent)
+    let tabs = snapshot.tabs(in: "w8")
+    #expect(snapshot.title(ofTab: tabs[0]) == "reviewer")
+    #expect(snapshot.title(ofTab: tabs[1]) == "scratch")
+    // A label that is not the position is a name, and still wins.
+    #expect(snapshot.title(ofTab: tabs[2]) == "docs")
+}
+
+@Test func aSpaceRowListsEveryTab() throws {
+    let snapshot = try titleSnapshot(tabs: gappyTabs, panes: gappyPanes, agents: namedAgent)
+    #expect(
+        snapshot.tabSummaries(inWorkspace: "w8") == ["1 reviewer", "2 scratch", "3 docs"]
+    )
+    // A space with nothing in it lists nothing, rather than a stray number.
+    let empty = try titleSnapshot(panes: "")
+    #expect(empty.tabSummaries(inWorkspace: "w8") == ["1"])
+    #expect(empty.tabSummaries(inWorkspace: "nope").isEmpty)
+}
+
+/// The tab follows the keyboard; the space still says where it is.
+@Test func aSplitNamesTheTabAfterTheFocusedPane() throws {
+    let panes = """
+    {"pane_id": "w8:p1", "terminal_id": "t1", "workspace_id": "w8", "tab_id": "w8:t1",
+     "focused": false, "agent_status": "idle", "revision": 1, "agent": "claude",
+     "cwd": "/Users/x/projects/herdr-term"},
+    {"pane_id": "w8:p2", "terminal_id": "t2", "workspace_id": "w8", "tab_id": "w8:t1",
+     "focused": true, "agent_status": "idle", "revision": 1, "agent": "cursor",
+     "cwd": "/Users/x/projects/herdr-term"}
+    """
+    let agents = """
+    {"terminal_id": "t1", "agent_status": "idle", "workspace_id": "w8", "tab_id": "w8:t1",
+     "pane_id": "w8:p1", "focused": false, "revision": 1, "agent": "claude", "name": "reviewer"},
+    {"terminal_id": "t2", "agent_status": "idle", "workspace_id": "w8", "tab_id": "w8:t1",
+     "pane_id": "w8:p2", "focused": true, "revision": 1, "agent": "cursor", "name": "second"}
+    """
+    let snapshot = try titleSnapshot(panes: panes, agents: agents)
+    #expect(snapshot.title(ofTab: snapshot.tabs[0]) == "second")
+    #expect(snapshot.title(ofWorkspace: snapshot.workspaces[0]) == "herdr-term")
+}
+
+@Test func homePathsAbbreviate() {
+    #expect(NSHomeDirectory().abbreviatingHome == "~")
+    #expect("\(NSHomeDirectory())/src/app".abbreviatingHome == "~/src/app")
+    #expect("/opt/homebrew/bin".abbreviatingHome == "/opt/homebrew/bin")
+}
+
 // MARK: - Split layouts
 
 private let splitTreeJSON = """

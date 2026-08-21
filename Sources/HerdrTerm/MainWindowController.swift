@@ -312,9 +312,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let shortcut = GhosttyConfig.Shortcut(keyEquivalent: characters, modifiers: modifiers)
 
             if let number = GhosttyRuntime.config.tabShortcuts[shortcut] {
-                let tabs = session.tabsInSelectedSpace
-                guard let tab = tabs.first(where: { $0.number == number })
-                    ?? tabs.dropFirst(Int(number) - 1).first
+                // By position: `tabs` is already in strip order, and matching
+                // on `TabInfo.number` would land on a different tab than the one
+                // wearing that number in the strip as soon as one is closed.
+                guard let tab = session.tabsInSelectedSpace.dropFirst(Int(number) - 1).first
                 else { return event }
                 self.select(focusTerminal: true) { $0.selectTab(tab.tabId) }
                 return nil
@@ -548,7 +549,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // `title` in the ghostty config is a fixed title for every window; with
         // nothing set, the window is named after what it is showing.
         window.title = GhosttyRuntime.config.title
-            ?? pane?.displayName ?? session?.selectedSpace?.label ?? "herdr-term"
+            ?? pane.flatMap { session?.title(ofPane: $0) }
+            ?? session?.selectedSpace.map { session?.title(ofSpace: $0) ?? $0.label }
+            ?? "herdr-term"
         window.subtitle = subtitle(session: session, pane: pane)
 
         sidebar.apply(buildSidebarModel())
@@ -668,7 +671,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 return SidebarModel.Row(
                     id: Self.spaceRowId(connection.id, space.workspaceId),
                     kind: .space,
-                    title: "\(space.number)  \(space.label)",
+                    title: "\(space.number)  \(session.title(ofSpace: space))",
                     subtitle: spaceSubtitle(space, session: session),
                     status: session.effectiveStatus(ofSpace: space),
                     unread: count > 0,
@@ -698,15 +701,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
     }
 
+    /// What is in the space, tab by tab. The title says where the space is, so
+    /// the second line is the only room there is to say what it is doing — and a
+    /// space with three tabs has three answers, not one.
     private func spaceSubtitle(_ space: WorkspaceInfo, session: SessionController) -> String {
-        if let cwd = space.tokens?["cwd"], !cwd.isEmpty {
-            return cwd.abbreviatingHome
-        }
-        let tabs = Int(space.tabCount)
-        let panes = session.panes(inSpace: space.workspaceId).count
-        let tabPart = tabs == 1 ? "1 tab" : "\(tabs) tabs"
-        let panePart = panes == 1 ? "1 pane" : "\(panes) panes"
-        return "\(tabPart)  ·  \(panePart)"
+        let summaries = session.tabSummaries(inSpace: space.workspaceId)
+        if !summaries.isEmpty { return summaries.joined(separator: "  ·  ") }
+        // Nothing to list: say so rather than leaving the row half empty.
+        if let cwd = space.tokens?["cwd"], !cwd.isEmpty { return cwd.abbreviatingHome }
+        return "No tabs"
     }
 
     // MARK: - Tab bar model
@@ -719,8 +722,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let panes = session.panes(inTab: tab.tabId)
             return TabBarModel.Item(
                 id: tab.tabId,
-                number: tab.number,
-                title: tabTitle(tab, panes: panes),
+                number: UInt(session.position(ofTab: tab)),
+                title: tabTitle(tab, session: session),
                 status: session.effectiveStatus(ofTab: tab),
                 unread: session.unreadCount(inTab: tab.tabId) > 0,
                 paneCount: panes.count,
@@ -730,14 +733,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return model
     }
 
-    /// Herdr labels an unnamed tab with its own number, which says nothing next
-    /// to the number already on the row; name it after what is running instead.
-    private func tabTitle(_ tab: TabInfo, panes: [PaneInfo]) -> String {
-        if tab.label != "\(tab.number)", !tab.label.isEmpty {
-            return "\(tab.number)  \(tab.label)"
-        }
-        let pane = panes.first { $0.focused } ?? panes.first
-        guard let pane else { return "\(tab.number)" }
-        return "\(tab.number)  \(pane.displayName)"
+    /// The number is the tab's *position*, not `TabInfo.number` — that one has
+    /// gaps, so a strip keyed on it disagrees with both Herdr's own labels and
+    /// the ⌘1…⌘9 that select the tabs.
+    private func tabTitle(_ tab: TabInfo, session: SessionController) -> String {
+        let name = session.title(ofTab: tab)
+        let position = session.position(ofTab: tab)
+        return name.isEmpty ? "\(position)" : "\(position)  \(name)"
     }
 }
