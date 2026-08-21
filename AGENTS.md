@@ -127,6 +127,8 @@ before touching `HerdrRPC` or `SessionController`.
 - **Moving between splits has to move *this client*, not just the server.** `pane.focus_direction` changes Herdr's focus and answers with the pane it landed on (`PaneFocus.focusedPaneId`); `settleSelection` only ever fills a selection that has gone *missing*, so a client that throws the answer away keeps its accent border and its keyboard exactly where they were. The keystroke then does nothing visible, and the next press asks the same question from the same pane — which is how ⌥⌘arrows looked fine for as long as nobody watched what it did. `focusNeighbour` adopts the id through `selectPane`; `no_neighbor` answers with the pane it started from, so an edge press lands on itself. Same shape as `pendingPaneId` below, and for the same reason.
 - **A split has to land on the pane it just made.** `pane.split` is sent with `focus: true`, so the *server* focuses the new pane, but `settleSelection` keeps this client's selection on the pane that was split — it still exists — and the two then disagree: the border on one pane, the split the user asked for on the other. `splitSelectedPane` therefore adopts the returned id through `pendingPaneId`, the same shape as `pendingTabId` and for the same reason (the pane is in no snapshot yet).
 - A bridge that exits on its own must **not** be re-attached automatically (`TerminalPaneView.detachedPaneId`); refresh would immediately respawn it and spin. Re-attaching is permission the user grants by picking the pane again, which routes through `MainWindowController.select`.
+- **The sidebar's order is not "most recent", and neither half of it comes from the server's array order.** `RecentsStore.load()` is the host order and it is insertion order: `remember` appends and leaves a host already in the list exactly where it is, because it runs on every `finishConnect` — including the ones a launch makes by itself — so an MRU list reordered the folders on every restart, under a pointer that had not asked for it. `SessionSnapshot.orderedWorkspaces` is the space order, by `number` (Herdr's own stable ordinal, already on the row and already what ⌃⌘1…⌃⌘9 name) with the id breaking ties, because `sorted` is not stable and a tie that lands differently on each poll is the same shuffle two seconds apart. `spacesComeBackInHerdrsOwnOrder` and `spacesSharingANumberStillHaveOneOrder` pin it. The connect sheet's prefill is the one place that still wants "most recent", and it takes `RecentsStore.selectedHost()` rather than the head of the list.
+- **A restored selection is one snapshot's worth of intent, and it belongs to `settleSelection`.** `RecentsStore.Selection` remembers the space, tab and pane per host (ids, so a server that has restarted simply misses and falls through to its own focus), plus one `selectedHost` for which host the window was showing — only one renders, so without it a relaunch restores every host's selection and then shows whichever is first. `finishConnect` reads the record into `restoring`, and the first `settleSelection` after that consumes it and clears it whether the ids fitted or not: a record that outlived one snapshot would keep pulling the window off whatever the user had since clicked. It is written from every place the selection moves (the `select*` methods *and* the settle after each snapshot), because quitting and closing the window announce themselves to nothing — and it never writes an empty selection over a real one. Restoring also pushes `pane.focus`, but only for a pane it really restored and only on the visible host: four hosts coming back at launch must not move the focus on three servers where somebody may be working in the TUI.
 - **The hosts to dial at launch are written when a host comes up, never when one goes down.** `RecentsStore.attached()` is a second list beside the recents, added to by `SessionController.finishConnect` and removed from only by `ConnectionsController.disconnect` and `forget` — the two places the *user* detaches a host. It cannot be a flag that `SessionController.disconnect()` clears, because closing the window and quitting the app both tear every session down through `disconnectAll`, so the flag would be cleared by the very quit it exists to survive. Restoring also belongs to a launch with nothing named on the command line (`MainWindowController(restoringHosts:)`): `--connect somewhere` asked for one host, not for the remembered ones alongside it. Each dial carries an empty completion on purpose — a host that has gone away reports itself by its sidebar row going to `failed`, and four restored hosts must not open four modal sheets over a window nobody has touched yet.
 
 ## Verify
@@ -234,11 +236,30 @@ to get wrong:
 
 ```bash
 defaults read dev.herdr.term herdr-term.attached   # the hosts the next launch dials
+defaults read dev.herdr.term herdr-term.recents    # sidebar order, oldest first
 ```
 
 Attach a host, quit, relaunch with no `--connect`: it comes back attached. Then
 **Disconnect** it and read the key again — it must be gone, and the launch after
-that must leave the row parked.
+that must leave the row parked. `herdr-term.recents` must not move when a host
+is merely reconnected — attach two hosts, quit, relaunch, click the *first* one,
+quit again, and the order has to be the one it was.
+
+Coming back to the same screen is the two-launch check next to it:
+
+```bash
+defaults read dev.herdr.term herdr-term.selection      # space/tab/pane per host
+defaults read dev.herdr.term herdr-term.selected-host  # the host that renders
+```
+
+Pick a space that is not the first, a tab that is not the first, and a pane that
+is not the first of a split; quit; relaunch. All three come back, the keyboard is
+in that pane, and `herdr pane list | grep focused` agrees. Then move Herdr's own
+focus elsewhere from the TUI (or `herdr pane focus <other>`) while the app is
+down: the relaunch must still land where the *app* was, and the pane it lands on
+must become the focused one on the server. With two hosts restored, only the
+visible one may push that focus — check the background host's `focused_pane_id`
+did not move.
 
 A pane that visibly reloads on a timer means the session is reconnecting, not
 that rendering is slow. Distinguish the two:

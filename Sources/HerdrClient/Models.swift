@@ -61,6 +61,19 @@ public struct SessionSnapshot: Codable, Sendable {
         layouts = try container.decodeIfPresent([LayoutSummary].self, forKey: .layouts) ?? []
     }
 
+    /// Spaces in an order that survives a restart.
+    ///
+    /// The `workspaces` array is the server's to order and nothing says the next
+    /// process gets the same one, so the sidebar reshuffled between launches
+    /// while the numbers on the rows stayed put. `number` is Herdr's own stable
+    /// ordinal — it is what the row already shows and what ⌃⌘1…⌃⌘9 name — so it
+    /// is the only order the sidebar can use without disagreeing with itself.
+    /// The id breaks a tie because `sorted` is not a stable sort, and a tie that
+    /// resolves differently on each poll is the same shuffle one snapshot later.
+    public var orderedWorkspaces: [WorkspaceInfo] {
+        workspaces.sorted { ($0.number, $0.workspaceId) < ($1.number, $1.workspaceId) }
+    }
+
     public func tabs(in workspaceId: String) -> [TabInfo] {
         tabs.filter { $0.workspaceId == workspaceId }.sorted { $0.number < $1.number }
     }

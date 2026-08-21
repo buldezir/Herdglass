@@ -95,8 +95,12 @@ final class ConnectionsController: SessionControllerDelegate {
     /// except when the caller is about to dial it itself with a completion to
     /// report into, which is what `dial: false` is for.
     func select(_ id: String, dial: Bool = true) {
-        guard connections.contains(where: { $0.id == id }) else { return }
+        guard let selected = connections.first(where: { $0.id == id }) else { return }
         selectedConnectionId = id
+        // Only one host renders, so which one it is has to be remembered as well
+        // as where it was: without this a relaunch restores every host's
+        // selection and then shows the first host in the sidebar.
+        RecentsStore.rememberSelectedHost(selected.target)
         for connection in connections {
             connection.session.isVisible = connection.id == id
         }
@@ -141,7 +145,13 @@ final class ConnectionsController: SessionControllerDelegate {
         for row in rows where !row.isAttached {
             row.session.connect(row.target) { _ in }
         }
-        if selectedConnectionId == nil { select(first.id, dial: false) }
+        if selectedConnectionId == nil {
+            // The host the window was showing, if it is one of the ones coming
+            // back; otherwise the first, which is now a stable order rather than
+            // whichever host was connected to most recently.
+            let last = RecentsStore.selectedHost().flatMap { target in rows.first { $0.target == target } }
+            select((last ?? first).id, dial: false)
+        }
         delegate?.connectionsDidChange(self)
     }
 

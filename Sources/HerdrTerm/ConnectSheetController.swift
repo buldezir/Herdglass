@@ -145,7 +145,10 @@ final class ConnectSheetController: NSWindowController {
             for host in configured { knownHosts.addItem(withTitle: host) }
         }
 
-        if let recent = recents.first {
+        // The host the window was last on, not the head of `recents` — that list
+        // is in sidebar order now, so its first entry is the oldest host the user
+        // has, which is the least likely thing they want typed in for them.
+        if let recent = RecentsStore.selectedHost() ?? recents.last {
             hostField.stringValue = recent.host
             sessionField.stringValue = recent.session ?? ""
         } else {

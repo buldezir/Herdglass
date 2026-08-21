@@ -273,6 +273,53 @@ private let gappyPanes = """
  "focused": true, "agent_status": "idle", "revision": 1, "cwd": "/Users/x/notes"}
 """
 
+/// The sidebar's own order. `workspaces` is whatever order the server built the
+/// array in, and a client that renders it straight reshuffles its folders
+/// between launches while the numbers on the rows stay where they were.
+@Test func spacesComeBackInHerdrsOwnOrder() throws {
+    let json = """
+    {
+      "version": "0.8.2", "protocol": 20,
+      "workspaces": [
+        {"workspace_id": "wc", "number": 3, "label": "c", "focused": false,
+         "pane_count": 0, "tab_count": 0, "active_tab_id": "wc:t1", "agent_status": "idle"},
+        {"workspace_id": "wa", "number": 1, "label": "a", "focused": true,
+         "pane_count": 0, "tab_count": 0, "active_tab_id": "wa:t1", "agent_status": "idle"},
+        {"workspace_id": "wb", "number": 2, "label": "b", "focused": false,
+         "pane_count": 0, "tab_count": 0, "active_tab_id": "wb:t1", "agent_status": "idle"}
+      ],
+      "tabs": [], "panes": [], "agents": []
+    }
+    """
+    let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+    #expect(snapshot.workspaces.map(\.workspaceId) == ["wc", "wa", "wb"])
+    #expect(snapshot.orderedWorkspaces.map(\.workspaceId) == ["wa", "wb", "wc"])
+    // The order the rows already claim: ⌃⌘1…⌃⌘9 name a space by its number.
+    #expect(snapshot.orderedWorkspaces.map(\.number) == [1, 2, 3])
+}
+
+/// `sorted` is not a stable sort, so spaces sharing a number would settle in a
+/// different order on each poll — the same shuffle, one snapshot apart.
+@Test func spacesSharingANumberStillHaveOneOrder() throws {
+    func snapshot(_ ids: [String]) throws -> SessionSnapshot {
+        let workspaces = ids.map { id in
+            """
+            {"workspace_id": "\(id)", "number": 1, "label": "\(id)", "focused": false,
+             "pane_count": 0, "tab_count": 0, "active_tab_id": "\(id):t1", "agent_status": "idle"}
+            """
+        }
+        let json = """
+        {"version": "0.8.2", "protocol": 20, "workspaces": [\(workspaces.joined(separator: ","))],
+         "tabs": [], "panes": [], "agents": []}
+        """
+        return try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+    }
+    let forwards = try snapshot(["wa", "wb", "wc"]).orderedWorkspaces.map(\.workspaceId)
+    let backwards = try snapshot(["wc", "wb", "wa"]).orderedWorkspaces.map(\.workspaceId)
+    #expect(forwards == ["wa", "wb", "wc"])
+    #expect(forwards == backwards)
+}
+
 @Test func tabPositionIgnoresTheGapsInHerdrsNumbering() throws {
     let snapshot = try titleSnapshot(tabs: gappyTabs, panes: gappyPanes)
     let tabs = snapshot.tabs(in: "w8")

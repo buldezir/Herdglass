@@ -96,6 +96,17 @@ final class SessionController {
     /// split is not necessarily the next one to land.
     private var pendingPaneId: String?
 
+    /// Where this host was when it was last attached, waiting for the snapshot
+    /// that can turn it back into a selection. Consumed by the first
+    /// `settleSelection` after a connect and dropped there whether it fitted or
+    /// not — a record that outlived one snapshot would fight the user's clicks.
+    private var restoring: RecentsStore.Selection?
+
+    /// What is already written down for this host, so the common case — a
+    /// snapshot every two seconds that settles onto the same three ids — does
+    /// not re-encode the whole record each time.
+    private var persistedSelection: RecentsStore.Selection?
+
     private var attentionOrder: [String] = []
     /// What each unread pane was last notified about. Herdr's own detection
     /// flaps — a pane can read `blocked`, `working`, `blocked` again inside a
@@ -224,6 +235,10 @@ final class SessionController {
         pendingTabId = nil
         pendingPaneId = nil
         socketPath = nil
+        // The record in defaults survives — that is what it is for — but the
+        // *pending* one must not: a reconnect asks for it again from scratch.
+        restoring = nil
+        persistedSelection = nil
         layoutTrees = [:]
         layoutFetches = []
         layoutPrefetches = [:]
@@ -278,6 +293,7 @@ final class SessionController {
             selectedTabId = nil
             selectedPaneId = nil
             focusRemoteWorkspace(workspaceId)
+            rememberSelection()
             delegate?.sessionDidUpdate(self)
         }
     }
@@ -315,6 +331,7 @@ final class SessionController {
         } else {
             selectedPaneId = nil
             focusRemoteTab(tabId)
+            rememberSelection()
             refreshLayoutIfNeeded()
             delegate?.sessionDidUpdate(self)
         }
@@ -334,6 +351,7 @@ final class SessionController {
         selectedPaneId = paneId
         markVisiblePanesRead()
         focusRemotePane(paneId)
+        rememberSelection()
         refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
     }
@@ -477,7 +495,7 @@ final class SessionController {
 
     // MARK: - Derived state
 
-    var spaces: [WorkspaceInfo] { snapshot?.workspaces ?? [] }
+    var spaces: [WorkspaceInfo] { snapshot?.orderedWorkspaces ?? [] }
 
     var selectedSpace: WorkspaceInfo? {
         guard let selectedWorkspaceId else { return nil }
@@ -597,6 +615,12 @@ final class SessionController {
         // quitting the app closes every session, and clearing the flag there
         // would forget exactly what it is for.
         RecentsStore.markAttached(connection.target)
+        // Read before the first snapshot is applied, because that snapshot is
+        // where it gets used: `settleSelection` prefers these ids over the
+        // server's focus, so the window comes back to the space, tab and pane it
+        // was on rather than to wherever Herdr was last driven from — including
+        // from the TUI, or by another client.
+        restoring = RecentsStore.selection(for: connection.target)
         applySnapshot(snapshot, isInitial: true)
         startEventWatch(rpc)
         delegate?.sessionDidUpdate(self)
@@ -728,20 +752,32 @@ final class SessionController {
 
         applyPendingTabSelection()
         applyPendingPaneSelection()
+        rememberSelection()
         refreshLayoutIfNeeded()
         delegate?.sessionDidUpdate(self)
     }
 
     /// Keep space / tab / pane pointing at things that still exist, following
-    /// the server's focus when this client has no opinion yet.
+    /// what this host was last left on, then the server's focus, when this client
+    /// has no opinion yet.
     private func settleSelection(_ snapshot: SessionSnapshot) {
+        // One shot. The snapshot straight after a connect is the only one that
+        // can honour a remembered selection: either those ids are in it or they
+        // are gone, and a record kept past that would keep pulling the window
+        // back off whatever the user has since picked.
+        let restoring = self.restoring
+        self.restoring = nil
+
         if let selectedWorkspaceId, snapshot.workspace(selectedWorkspaceId) == nil {
             self.selectedWorkspaceId = nil
             selectedTabId = nil
             selectedPaneId = nil
         }
         if selectedWorkspaceId == nil {
-            selectedWorkspaceId = snapshot.focusedWorkspaceId ?? snapshot.workspaces.first?.workspaceId
+            let remembered = restoring?.workspaceId.flatMap { snapshot.workspace($0) }
+            selectedWorkspaceId = remembered?.workspaceId
+                ?? snapshot.focusedWorkspaceId
+                ?? snapshot.orderedWorkspaces.first?.workspaceId
         }
         guard let workspaceId = selectedWorkspaceId else { return }
 
@@ -751,8 +787,9 @@ final class SessionController {
             selectedPaneId = nil
         }
         if selectedTabId == nil {
+            let remembered = restoring?.tabId.flatMap { id in tabs.first { $0.tabId == id } }
             let focused = snapshot.focusedTabId.flatMap { id in tabs.first { $0.tabId == id } }
-            selectedTabId = (focused ?? tabs.first { $0.focused } ?? tabs.first)?.tabId
+            selectedTabId = (remembered ?? focused ?? tabs.first { $0.focused } ?? tabs.first)?.tabId
         }
         guard let tabId = selectedTabId else { return }
 
@@ -761,9 +798,45 @@ final class SessionController {
             self.selectedPaneId = nil
         }
         if selectedPaneId == nil {
+            let remembered = restoring?.paneId.flatMap { id in panes.first { $0.paneId == id } }
             let focused = snapshot.focusedPaneId.flatMap { id in panes.first { $0.paneId == id } }
-            selectedPaneId = (focused ?? panes.first { $0.focused } ?? panes.first)?.paneId
+            selectedPaneId = (remembered ?? focused ?? panes.first { $0.focused } ?? panes.first)?.paneId
         }
+
+        // Landing somewhere the server is not already looking is this client
+        // making a choice, exactly as a click is, so the server has to hear about
+        // it: Herdr's focus is what `herdr pane run` and the TUI mean by "here".
+        //
+        // Two guards, both narrowing this to the one case it is for. Only a pane
+        // we actually restored — settling onto a pane because the old one closed
+        // is following the server, not overruling it. And only the host on
+        // screen: restoring four hosts at launch must not move the focus on three
+        // servers nobody is looking at, where somebody may well be working in the
+        // TUI. `isVisible` is already set by the time a connect finishes, because
+        // selecting a host is what starts the dial.
+        if isVisible, let paneId = selectedPaneId, restoring?.paneId == paneId, paneId != snapshot.focusedPaneId {
+            focusRemotePane(paneId)
+        }
+    }
+
+    /// Write down where this host is, so attaching it again comes back here.
+    ///
+    /// Called from every place the selection can move — the user's own picks and
+    /// the settle that follows each snapshot — because the app is quit and the
+    /// window is closed without either announcing itself, so there is no later
+    /// moment to do this in. A space is the least it will record: a host with
+    /// nothing selected has nothing worth coming back to, and writing that would
+    /// erase where it was.
+    private func rememberSelection() {
+        guard let target, let workspaceId = selectedWorkspaceId else { return }
+        let selection = RecentsStore.Selection(
+            workspaceId: workspaceId,
+            tabId: selectedTabId,
+            paneId: selectedPaneId
+        )
+        guard selection != persistedSelection else { return }
+        persistedSelection = selection
+        RecentsStore.rememberSelection(selection, for: target)
     }
 
     /// A pane the user is looking at right now: in the selected tab of the
@@ -819,7 +892,7 @@ final class SessionController {
         if let selectedWorkspaceId {
             tabIds += snapshot.tabs(in: selectedWorkspaceId).map(\.tabId)
         }
-        for workspace in snapshot.workspaces where workspace.workspaceId != selectedWorkspaceId {
+        for workspace in snapshot.orderedWorkspaces where workspace.workspaceId != selectedWorkspaceId {
             if let tab = preferredTab(in: workspace.workspaceId, snapshot: snapshot) {
                 tabIds.append(tab.tabId)
             }
