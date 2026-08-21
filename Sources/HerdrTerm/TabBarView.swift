@@ -206,11 +206,15 @@ private final class TabItemView: NSView {
 
     /// One width for every tab, so the strip only ever moves when a tab is
     /// opened or closed — not when a title changes under it and not on hover.
-    /// Wide enough for a number, a status dot, a directory or agent name of
-    /// ordinary length and the close button, and no wider — an unselected tab
-    /// draws no background, so slack past the text reads as a gap rather than
-    /// as a tab.
-    static let width: CGFloat = 134
+    ///
+    /// Sized from the label rather than by eye: the chrome around it takes 55pt
+    /// in the worst case (8 leading, the 8pt dot, 5, then 5, a pane count, 4,
+    /// the 12pt close button and 7 trailing), and a project-length name like
+    /// `simple-mac-launcher` measures 115pt at 11pt medium. Anything longer
+    /// still truncates — a tab wide enough for a full path would leave the
+    /// short ones mostly empty, and an unselected tab draws no background, so
+    /// slack past the text reads as a gap rather than as a tab.
+    static let width: CGFloat = 172
 
     required init?(coder: NSCoder) { nil }
 
