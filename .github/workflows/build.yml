@@ -126,16 +126,22 @@ jobs:
           path: .build/Herdglass.app.zip
           if-no-files-found: error
 
-      # `swift test` hung here for 82 minutes on the first run — build complete,
-      # then not one line of output, and swiftpm-testing left as an orphan at
-      # cleanup. So it runs under a pty, because SwiftPM block-buffers into a
-      # pipe and the whole suite's output fits in one buffer, i.e. a hang looks
+      # --no-parallel because the suite deadlocks on a 3-core runner: Swift's
+      # cooperative pool is one thread per core, `ProcessRunner.run` blocks its
+      # caller in `group.wait()` until the drains it queued elsewhere finish,
+      # and the three processRunner tests take all three threads, leaving
+      # nothing to run the drains. A sample of the wedged process caught exactly
+      # that, and 60 serial tests cost under a second anyway. Machines with more
+      # cores than blocking tests — this one has 10 — never see it.
+      #
+      # It stays under a pty because SwiftPM block-buffers into a pipe and the
+      # whole suite's output fits in one buffer, so the first hang looked
       # identical to silence; and under a watchdog that samples the stuck
       # process, so the log says where it stopped rather than only that it did.
       - name: Test
         timeout-minutes: 15
         run: |
-          script -q /dev/null swift test --filter HerdrClientTests 2>&1 &
+          script -q /dev/null swift test --filter HerdrClientTests --no-parallel 2>&1 &
           TEST=$!
           (
             sleep 300
