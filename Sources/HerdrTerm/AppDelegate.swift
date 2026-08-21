@@ -236,8 +236,11 @@ enum MainMenu {
             .ghostty(.newTab)
         // The arrows the chrome is laid out in: tabs run across the strip, so
         // they are ⌥⌘← and ⌥⌘→, and spaces run down the sidebar — every
-        // attached host's, one list — so they are ⌥⌘↑ and ⌥⌘↓. Splits, which
-        // are the layer below both, take the same four arrows with ⌃ added.
+        // attached host's, one list — so they are ⌥⌘↑ and ⌥⌘↓. Splits, the
+        // layer below both, take the same four arrows on ⇧⌘. Not ⌃⌥⌘, which
+        // is where they were first put: the menu carried them and AppKit
+        // matched them, but something above this app was eating the real
+        // keystrokes before it ever saw them.
         let nextTab = menu.addItem(
             withTitle: "Next Tab",
             action: #selector(MainWindowController.selectNextTab),
@@ -287,7 +290,7 @@ enum MainMenu {
             ("Down", #selector(MainWindowController.focusPaneDown), "\u{F701}", .focusSplitDown),
         ] {
             let item = focus.addItem(withTitle: title, action: selector, keyEquivalent: key)
-            item.keyEquivalentModifierMask = [.command, .option, .control]
+            item.keyEquivalentModifierMask = [.command, .shift]
             item.ghostty(action)
         }
         let focusItem = NSMenuItem(title: "Select Split", action: nil, keyEquivalent: "")
@@ -375,8 +378,8 @@ extension NSMenu {
     /// So does an item whose only competition is a ghostty *default*
     /// (`GhosttyConfig.isRebound`). This window has hosts and spaces in it that
     /// ghostty has no actions for, and they need the same arrows: ⌥⌘↑ and ⌥⌘↓
-    /// walk the spaces, so the splits ghostty puts there move down to
-    /// ⌃⌥⌘arrows. Moving `goto_split:up` somewhere else in the config still
+    /// walk the spaces, so the splits ghostty puts there move over to
+    /// ⇧⌘arrows. Moving `goto_split:up` somewhere else in the config still
     /// moves the menu item — the one thing that cannot be honoured is a config
     /// that spells ghostty's default out again, since a re-typed default and a
     /// default are the same two bytes to `ghostty_config_trigger`.

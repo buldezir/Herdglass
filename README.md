@@ -204,7 +204,7 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌘W` | Close: the pane, in a split; the tab, when the tab has one pane |
 | `⌥⌘W` | Close tab, split or not (`⇧⌘W` closes the window, and the app) |
 | `⌘D` / `⇧⌘D` | Split the active pane right / down |
-| `⌃⌥⌘←↑↓→` | Move the keyboard to the pane in that direction |
+| `⇧⌘←↑↓→` | Move the keyboard to the pane in that direction |
 | `⌘1`…`⌘9` | Tab with that number, in the selected space |
 | `⌃⌘1`…`⌃⌘9` | Space with that number |
 | `⌥⌘←` / `⌥⌘→` | Previous / next tab |

@@ -43,7 +43,7 @@ including which menu shortcuts came from the config and which are ours.
 
 `ConnectionsController` owns the window's hosts — one `SessionController` per host, each with its own SSH master, event stream and selection (space → tab → pane). Only the selected host is `isVisible`, so only its panes have bridges. `MainWindowController` turns all of that into a `SidebarModel`, a `TabBarModel` and a `SplitContainerView.Model`; `StatusStyle` is the only place agent status becomes a color or a word.
 
-A tab's panes are all live at once: `SplitContainerView` builds nested `NSSplitView`s from the tab's split tree, one `TerminalPaneView` (and one bridge) per pane. Dragging a divider is a `layout.set_split_ratio` on the server, so the TUI and every other client see the same geometry. ⌘D / ⇧⌘D are `pane.split`, ⌃⌥⌘arrows are `pane.focus_direction` — the GUI never computes geometry itself.
+A tab's panes are all live at once: `SplitContainerView` builds nested `NSSplitView`s from the tab's split tree, one `TerminalPaneView` (and one bridge) per pane. Dragging a divider is a `layout.set_split_ratio` on the server, so the TUI and every other client see the same geometry. ⌘D / ⇧⌘D are `pane.split`, ⇧⌘arrows are `pane.focus_direction` — the GUI never computes geometry itself.
 
 ## Constraints agents should not re-break
 
@@ -119,7 +119,7 @@ before touching `HerdrRPC` or `SessionController`.
 - Only the selected host renders. A pane counts as read when it is on screen, i.e. in the selected tab of the visible host (`SessionController.isVisible`), so a split of four panes clears four attention flags.
 - **A pane off screen says so through macOS, not through a blinking toolbar.** Herdr's own notion of a notification is a background agent changing state, and its config picks the delivery (`[ui.toast] delivery`: an in-app toast, the outer terminal, the OS, or nothing). A GUI client has no toast layer and no outer terminal, so `AgentNotifications` takes the OS route on Herdr's behalf. Three rules keep it quiet, and they are why the toolbar bell is gone rather than merely hidden: notify on the *transition* into `blocked`/`done`, never on a state that is merely still true; skip a reason a pane has already been notified about (`SessionController.notifiedReasons` — Herdr's detection genuinely flaps `blocked → working → blocked` inside a second while an agent redraws its prompt, and the bell flickering at that rate is what the notification replaces); and withdraw the notification the moment the pane is read, so `markRead` and Notification Center say the same thing. One identifier per pane (`pane-<id>`) is what makes the last two possible.
 - **One window, one instance, and both halves are load bearing.** `AppDelegate` holds a single `MainWindowController` and has no action that makes another; `HerdrTermMain` turns a second *process* away by handing the screen back to the `NSRunningApplication` already registered for the bundle. Neither half is enough alone: the Finder refuses a second launch but `open -n` and the binary run out of `.build` do not, and no amount of process checking stops a ⌘N. Two of anything here means two clients dialling the same remembered hosts — two SSH masters and two sets of bridges per host, disagreeing about what Herdr last said. The `--bridge` children exec the same binary and return before the check; they never build an `NSApplication`, so LaunchServices does not register them and they cannot be mistaken for a second app (`--show-ghostty-config` and `--self-test` return before it too, and stay runnable while the app is up). `new_window` and `close_all_windows` are gone from `GhosttyConfig.Action` for the same reason: a keybind cannot move a menu item that does not exist.
-- **A ghostty *default* does not move a menu item that shipped with a key of its own; a `keybind` the user wrote does.** `ghostty_config_trigger` answers from the merged config and cannot say where a trigger came from, so `GhosttyConfig.isRebound` asks a second, unloaded `ghostty_config_new` for the stock trigger and compares — the same "tell a default from a typed value" problem `quit-after-last-window-closed` gave up on, solved for keybinds because there is a config to diff against. It is what lets ⌥⌘↑/⌥⌘↓ be Previous/Next Space here: ghostty's defaults put `goto_split:up`/`down` on those keys, and this window has spaces in it that ghostty has no action for, so the splits take ⌃⌥⌘arrows instead. An item with *no* built-in key (Open Terminal Config) still takes ghostty's default, which is how ⌘, keeps working. A config that re-types a ghostty default cannot be told from the default, and that is the one case this gets wrong on purpose.
+- **A ghostty *default* does not move a menu item that shipped with a key of its own; a `keybind` the user wrote does.** `ghostty_config_trigger` answers from the merged config and cannot say where a trigger came from, so `GhosttyConfig.isRebound` asks a second, unloaded `ghostty_config_new` for the stock trigger and compares — the same "tell a default from a typed value" problem `quit-after-last-window-closed` gave up on, solved for keybinds because there is a config to diff against. It is what lets ⌥⌘↑/⌥⌘↓ be Previous/Next Space here: ghostty's defaults put `goto_split:up`/`down` on those keys, and this window has spaces in it that ghostty has no action for, so the splits take ⇧⌘arrows instead. An item with *no* built-in key (Open Terminal Config) still takes ghostty's default, which is how ⌘, keeps working. A config that re-types a ghostty default cannot be told from the default, and that is the one case this gets wrong on purpose.
 - Two shortcuts wanted `⌘,`: ghostty's `open_config` default and the macOS Settings key. A duplicate key equivalent in one menu is silently given to whichever item comes first, so `NSMenu.applyGhosttyShortcuts` collects what the keybinds claimed and makes anything else holding that shortcut surrender it — the user's own config wins, and Settings… goes shortcutless unless they move `open_config`. Anything new with a built-in key equivalent inherits that rule for free.
 - libghostty's tick is reference counted by attached panes (`GhosttyRuntime`), not left running at 60 Hz forever.
 - Window-scoped key monitors must be removed in `windowWillClose`, or a closed window keeps swallowing ⌘1…⌘9.
@@ -217,10 +217,17 @@ Navigation is four arrows on two levels, and `--show-ghostty-config` prints what
 the menu ended up with without launching anything: ⌥⌘←/→ walk the tab strip,
 ⌥⌘↑/↓ walk every attached host's spaces as one list — the last space of one
 host steps into the first of the next, and the sidebar selection follows — and
-the same arrows with ⌃ move the keyboard between the panes of a split. In a
-split, ⌥⌘↑ must change the space, not the pane: that is the ghostty default
-this app overrides. With two hosts attached and one merely remembered, the walk
-must skip the parked one rather than dialling it.
+⇧⌘arrows move the keyboard between the panes of a split. In a split, ⌥⌘↑ must
+change the space, not the pane: that is the ghostty default this app overrides.
+With two hosts attached and one merely remembered, the walk must skip the
+parked one rather than dialling it.
+
+**A shortcut the menu carries is not a shortcut the app receives.** The splits
+were on ⌃⌥⌘arrows first, and that combination never reached the app from a real
+keyboard, though the menu held it, AppKit matched it, and synthetic key events
+drove it end to end — something above the app was taking it. Synthetic events
+are how the *action* gets tested here; only a hand on the keyboard tests the
+*key*. Anything moved onto a new combination needs both.
 
 Restoring hosts is a two-launch check, and `disconnect` is the half that is easy
 to get wrong:
