@@ -986,6 +986,22 @@ private let emptySnapshotJSON = """
     #expect(options.socketPath == nil)
 }
 
+/// A pane's PTY is resized between the size this bridge told herdr about and
+/// the moment its SIGWINCH source is armed, and that resize is discarded rather
+/// than queued. The size read after the source exists is therefore the one
+/// herdr has to hear about, and a bridge whose size never moved must stay quiet
+/// — an unasked-for resize costs a full repaint of the pane.
+@Test func bridgeResendsThePTYSizeOnlyWhenItMovedSinceTheSpawn() {
+    let spawned = PTYSize(cols: 47, rows: 15)
+    #expect(ControlBridge.startupResize(spawned: spawned, current: PTYSize(cols: 212, rows: 56))
+        == PTYSize(cols: 212, rows: 56))
+    #expect(ControlBridge.startupResize(spawned: spawned, current: spawned) == nil)
+    // A PTY with no size at all is not a resize, it is a `TIOCGWINSZ` that
+    // failed; herdr rejects a zero and would keep the size it already has.
+    #expect(ControlBridge.startupResize(spawned: spawned, current: PTYSize(cols: 0, rows: 0)) == nil)
+    #expect(ControlBridge.startupResize(spawned: spawned, current: PTYSize(cols: 212, rows: 0)) == nil)
+}
+
 /// The argv is handed to libghostty as one shell string, so every element has
 /// to survive `/bin/sh -c` — including an app bundle somebody moved into a
 /// directory with a space in it.

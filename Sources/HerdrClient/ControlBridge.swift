@@ -65,6 +65,17 @@ public struct BridgeOptions: Equatable, Sendable {
     }
 }
 
+/// A PTY's size in cells, which is the only size herdr deals in.
+public struct PTYSize: Equatable, Sendable {
+    public var cols: Int
+    public var rows: Int
+
+    public init(cols: Int, rows: Int) {
+        self.cols = cols
+        self.rows = rows
+    }
+}
+
 /// PTY child for libghostty: translates Herdr `terminal session control` NDJSON
 /// into raw ANSI on stdout / keystrokes on stdin.
 public enum ControlBridge {
@@ -112,6 +123,21 @@ public enum ControlBridge {
         let io = BridgeIO(process: proc, herdrIn: toHerdr.fileHandleForWriting)
         io.startStdin()
         io.startWinch()
+        // Read the size again now that the signal source exists, because the
+        // one resize a pane cannot afford to miss is the one that lands here.
+        // libghostty creates every surface at its own 800x600 and only hears
+        // the real size once the pane view has been laid out, so a new pane's
+        // PTY is always resized a moment after this process is forked — and a
+        // SIGWINCH delivered before the source is armed is gone for good, since
+        // the default action for SIGWINCH is to discard it. herdr then keeps
+        // the `--cols/--rows` it was spawned with above, and the pane draws a
+        // 400x300pt terminal in the corner of a full-size one until something
+        // resizes the window: "switching spaces sometimes shrinks the
+        // terminal". A change earlier than this read is caught by the read, a
+        // change later than it by the source.
+        if let resize = startupResize(spawned: size, current: currentWinSize()) {
+            io.send(["type": "terminal.resize", "cols": resize.cols, "rows": resize.rows])
+        }
         io.startHerdrOutput(fromHerdr.fileHandleForReading)
         if let controlPipe = options.controlPipe {
             io.startControlPipe(at: controlPipe)
@@ -124,6 +150,14 @@ public enum ControlBridge {
         withExtendedLifetime(toHerdr) {}
         withExtendedLifetime(fromHerdr) {}
         exit(proc.terminationStatus == 0 ? 0 : max(Int32(proc.terminationStatus), 1))
+    }
+
+    /// The resize a starting bridge owes herdr, or nil when the PTY still has
+    /// the size herdr was spawned with. See the call site for why a bridge is
+    /// born owing one.
+    public static func startupResize(spawned: PTYSize, current: PTYSize) -> PTYSize? {
+        guard current.cols > 0, current.rows > 0, current != spawned else { return nil }
+        return current
     }
 }
 
@@ -271,13 +305,8 @@ private func handleHerdrLine(_ line: Data) {
     writeIgnoringBrokenPipe(STDOUT_FILENO, bytes)
 }
 
-private struct WinSize {
-    var cols: Int
-    var rows: Int
-}
-
-private func currentWinSize() -> WinSize {
+private func currentWinSize() -> PTYSize {
     var ws = winsize()
     _ = ioctl(STDIN_FILENO, TIOCGWINSZ, &ws)
-    return WinSize(cols: Int(ws.ws_col), rows: Int(ws.ws_row))
+    return PTYSize(cols: Int(ws.ws_col), rows: Int(ws.ws_row))
 }
