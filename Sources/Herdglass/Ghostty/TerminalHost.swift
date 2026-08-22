@@ -170,10 +170,13 @@ private func terminalHostAction(
     let session = target.tag == GHOSTTY_TARGET_SURFACE
         ? terminalSession(for: target.target.surface)
         : nil
+    // Its strings are copied here for the same reason, and the reason is worse:
+    // they are freed rather than merely unowned. See `actionText(from:)`.
+    let text = actionText(from: action)
     Task { @MainActor in
         switch target.tag {
         case GHOSTTY_TARGET_SURFACE:
-            session?.handle(action)
+            session?.handle(action, text: text)
         case GHOSTTY_TARGET_APP:
             host.handle(action)
         default:

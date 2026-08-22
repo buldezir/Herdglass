@@ -232,20 +232,16 @@ final class TerminalSession {
     /// Surface-targeted actions. The window, tab and split ones are Herdr's to
     /// decide — this app draws what the server reports — so they are dropped
     /// rather than handled.
-    func handle(_ action: ghostty_action_s) {
+    func handle(_ action: ghostty_action_s, text: String?) {
         switch action.tag {
         case GHOSTTY_ACTION_RENDER:
             requestRender()
         case GHOSTTY_ACTION_SET_TITLE:
-            state.title = string(from: action.action.set_title.title)
+            state.title = text
         case GHOSTTY_ACTION_MOUSE_OVER_LINK:
-            state.hoveredLinkURL = string(
-                from: action.action.mouse_over_link.url,
-                length: Int(action.action.mouse_over_link.len)
-            )
+            state.hoveredLinkURL = text
         case GHOSTTY_ACTION_OPEN_URL:
-            if let url = string(from: action.action.open_url.url, length: Int(action.action.open_url.len)),
-               let value = URL(string: url) {
+            if let text, let value = URL(string: text) {
                 NSWorkspace.shared.openExternally(value)
             }
         case GHOSTTY_ACTION_MOUSE_SHAPE:
@@ -463,6 +459,37 @@ final class TerminalSession {
             value |= 1 << 24
         }
         return value
+    }
+}
+
+/// Every string an action carries, copied while libghostty still owns it.
+///
+/// The pointers in a `ghostty_action_s` are libghostty's and do not outlive the
+/// action callback, so reading one after the hop to the main actor is a
+/// use-after-free — and it does not crash, it lies. The memory has been reused
+/// by then, so a hovered link arrives as a run of the screen's blank cells and
+/// an `open_url` arrives as binary with a stale length, which `URL(string:)`
+/// percent-escapes into a plausible-looking relative path and LaunchServices
+/// then answers for: "The file … couldn't be opened", or, when the junk happens
+/// to name something launchable, Finder's own "The application can't be opened.
+/// -50". The struct is a value and survives the hop on its own; only its
+/// strings need this, so any new action carrying a pointer belongs here too.
+func actionText(from action: ghostty_action_s) -> String? {
+    switch action.tag {
+    case GHOSTTY_ACTION_SET_TITLE:
+        return string(from: action.action.set_title.title)
+    case GHOSTTY_ACTION_MOUSE_OVER_LINK:
+        return string(
+            from: action.action.mouse_over_link.url,
+            length: Int(action.action.mouse_over_link.len)
+        )
+    case GHOSTTY_ACTION_OPEN_URL:
+        return string(
+            from: action.action.open_url.url,
+            length: Int(action.action.open_url.len)
+        )
+    default:
+        return nil
     }
 }
 
