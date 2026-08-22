@@ -90,6 +90,31 @@ final class SplitContainerView: NSView {
         focusActivePane()
     }
 
+    /// Follow the active pane with the keyboard when the active pane changes.
+    ///
+    /// ⇧⌘arrow is a *focus* move and nothing else: the same views stay in the
+    /// same window, so `restoreFocusIfLost` finds no vacancy and does nothing —
+    /// which left the accent border on the pane Herdr had moved to while the
+    /// keystrokes kept going to the one before it. The border and the keyboard
+    /// have to travel together.
+    ///
+    /// Handing the keyboard over is conditional on already holding it. When the
+    /// first responder is somewhere else that is still real — the sidebar or the
+    /// tab strip the user is arrow-keying through — a selection change must not
+    /// drag focus into a terminal; that is `restoreFocusIfLost`'s rule, and this
+    /// falls back to it verbatim.
+    private func moveKeyboardToActivePane() {
+        guard let window, window.attachedSheet == nil else { return }
+        guard let responder = window.firstResponder as? NSView,
+              responder.window != nil,
+              responder.isDescendant(of: self)
+        else {
+            restoreFocusIfLost()
+            return
+        }
+        focusActivePane()
+    }
+
     func allowReattach() {
         for view in paneViews.values { view.allowReattach() }
         placeholder.allowReattach()
@@ -145,10 +170,12 @@ final class SplitContainerView: NSView {
         decorate(live: live)
         attachPanes(live: live)
         // Only on a structural change or a move, never on the two-second poll:
-        // a vacancy is something these create, and re-checking on every snapshot
-        // would pull the keyboard out of the chrome a second after the user put
-        // it there.
-        if rebuilt || previousActivePaneId != model.activePaneId {
+        // both of those are things the user just did, and re-checking on every
+        // snapshot would pull the keyboard out of the chrome a second after the
+        // user put it there.
+        if previousActivePaneId != model.activePaneId {
+            moveKeyboardToActivePane()
+        } else if rebuilt {
             restoreFocusIfLost()
         }
     }
