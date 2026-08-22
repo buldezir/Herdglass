@@ -99,7 +99,7 @@ final class TerminalHost {
             decoding: UnsafeBufferPointer(start: pointer, count: Int(path.len)).map(UInt8.init(bitPattern:)),
             as: UTF8.self
         )
-        NSWorkspace.shared.open(URL(fileURLWithPath: value))
+        NSWorkspace.shared.openExternally(URL(fileURLWithPath: value))
     }
 
     /// The sessions still alive, dropping any whose pane has gone.

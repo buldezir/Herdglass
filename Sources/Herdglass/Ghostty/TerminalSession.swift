@@ -203,7 +203,7 @@ final class TerminalSession {
 
     func openHoveredLink() {
         guard let url = state.hoveredLinkURL, let value = URL(string: url) else { return }
-        NSWorkspace.shared.open(value)
+        NSWorkspace.shared.openExternally(value)
     }
 
     /// Runs one of libghostty's own keybind actions by name, e.g. `select_all`.
@@ -246,7 +246,7 @@ final class TerminalSession {
         case GHOSTTY_ACTION_OPEN_URL:
             if let url = string(from: action.action.open_url.url, length: Int(action.action.open_url.len)),
                let value = URL(string: url) {
-                NSWorkspace.shared.open(value)
+                NSWorkspace.shared.openExternally(value)
             }
         case GHOSTTY_ACTION_MOUSE_SHAPE:
             view?.applyCursor(for: action.action.mouse_shape)

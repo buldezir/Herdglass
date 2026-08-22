@@ -197,6 +197,6 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func openSystemSettings() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") else { return }
-        NSWorkspace.shared.open(url)
+        NSWorkspace.shared.openExternally(url)
     }
 }
