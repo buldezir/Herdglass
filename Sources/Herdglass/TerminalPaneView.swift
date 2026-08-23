@@ -14,6 +14,19 @@ final class TerminalPaneView: NSView {
     /// changes, so it has to reach the session and not just libghostty.
     var onActivate: (() -> Void)?
 
+    /// Breathing room between the pane's edge and the terminal in it. Inside
+    /// the pane rather than around it: the panes still tile the window edge to
+    /// edge, so the attention ring keeps framing the whole pane and a split's
+    /// divider stays a hairline between two neighbours — what moves is the
+    /// grid, which is what was touching the divider and the window's corner.
+    ///
+    /// Deliberately not `window-padding-x`/`-y`: those are libghostty's own,
+    /// spent inside the surface between its edge and the grid, so reading them
+    /// here would charge the user twice for one setting. Nor a
+    /// `ChromeMetrics.length` — it frames the terminal's font, not the chrome's,
+    /// so it must not move when the sidebar's type does.
+    static let contentPadding: CGFloat = 4
+
     private var session: TerminalSession?
     private var terminalView: TerminalSurfaceView?
     private var currentPaneId: String?
@@ -202,11 +215,15 @@ final class TerminalPaneView: NSView {
         view.onPrimaryClick = { [weak self] in self?.onActivate?() }
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: placeholder)
+        // The padded strip left over is this view's layer, painted in the same
+        // terminal background, so the inset reads as a margin rather than as a
+        // border around the surface.
+        let padding = Self.contentPadding
         NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: topAnchor),
-            view.bottomAnchor.constraint(equalTo: bottomAnchor),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor, constant: padding),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -padding),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: padding),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -padding),
         ])
         // The surface is created against a view that is already in the window:
         // libghostty builds a `CVDisplayLink` from the view's screen, and a view
