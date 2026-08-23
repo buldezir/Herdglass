@@ -247,27 +247,25 @@ enum MainMenu {
         menu.addItem(withTitle: "New Tab", action: #selector(MainWindowController.newTab(_:)), keyEquivalent: "t")
             .ghostty(.newTab)
         // The arrows the chrome is laid out in: tabs run across the strip, so
-        // they are ⇧⌘← and ⇧⌘→, and spaces run down the sidebar — every
-        // attached host's, one list — so they are ⇧⌘↑ and ⇧⌘↓. Splits, the
-        // layer below both, take the same four arrows on ⌥⌘, which is also
-        // where ghostty's own `goto_split` defaults sit, so the two agree
-        // rather than one having to be argued out of the other's way. Not
-        // ⌃⌥⌘, which is where the splits were first put: the menu carried
-        // them and AppKit matched them, but something above this app was
-        // eating the real keystrokes before it ever saw them.
+        // they are ⌥⌘← and ⌥⌘→, and spaces run down the sidebar — every
+        // attached host's, one list — so they are ⌥⌘↑ and ⌥⌘↓. Splits, the
+        // layer below both, take the same four arrows on ⇧⌘. Not ⌃⌥⌘, which
+        // is where they were first put: the menu carried them and AppKit
+        // matched them, but something above this app was eating the real
+        // keystrokes before it ever saw them.
         let nextTab = menu.addItem(
             withTitle: "Next Tab",
             action: #selector(MainWindowController.selectNextTab),
             keyEquivalent: "\u{F703}"
         )
-        nextTab.keyEquivalentModifierMask = [.command, .shift]
+        nextTab.keyEquivalentModifierMask = [.command, .option]
         nextTab.ghostty(.nextTab)
         let previousTab = menu.addItem(
             withTitle: "Previous Tab",
             action: #selector(MainWindowController.selectPreviousTab),
             keyEquivalent: "\u{F702}"
         )
-        previousTab.keyEquivalentModifierMask = [.command, .shift]
+        previousTab.keyEquivalentModifierMask = [.command, .option]
         previousTab.ghostty(.previousTab)
         menu.addItem(.separator())
         // Spaces are Herdr's own, so ghostty has no action to rebind these to,
@@ -277,13 +275,13 @@ enum MainMenu {
             action: #selector(MainWindowController.selectNextSpace),
             keyEquivalent: "\u{F701}"
         )
-        nextSpace.keyEquivalentModifierMask = [.command, .shift]
+        nextSpace.keyEquivalentModifierMask = [.command, .option]
         let previousSpace = menu.addItem(
             withTitle: "Previous Space",
             action: #selector(MainWindowController.selectPreviousSpace),
             keyEquivalent: "\u{F700}"
         )
-        previousSpace.keyEquivalentModifierMask = [.command, .shift]
+        previousSpace.keyEquivalentModifierMask = [.command, .option]
         menu.addItem(.separator())
         menu.addItem(withTitle: "Split Right", action: #selector(MainWindowController.splitRight), keyEquivalent: "d")
             .ghostty(.splitRight)
@@ -304,7 +302,7 @@ enum MainMenu {
             ("Down", #selector(MainWindowController.focusPaneDown), "\u{F701}", .focusSplitDown),
         ] {
             let item = focus.addItem(withTitle: title, action: selector, keyEquivalent: key)
-            item.keyEquivalentModifierMask = [.command, .option]
+            item.keyEquivalentModifierMask = [.command, .shift]
             item.ghostty(action)
         }
         let focusItem = NSMenuItem(title: "Select Split", action: nil, keyEquivalent: "")
@@ -390,15 +388,13 @@ extension NSMenu {
     /// them or no such action at all.
     ///
     /// So does an item whose only competition is a ghostty *default*
-    /// (`GhosttyConfig.isRebound`). The splits now sit on ⌥⌘arrows, which is
-    /// where ghostty's `goto_split:up`/`down` defaults already were, so that
-    /// argument is settled by agreement rather than by override — but the rule
-    /// still carries ⇧⌘←/→, where ghostty's `next_tab`/`previous_tab` defaults
-    /// (⌥⌘→/←) would otherwise pull Next and Previous Tab back onto the keys
-    /// the splits are using. Moving `next_tab` somewhere else in the config
-    /// still moves the menu item — the one thing that cannot be honoured is a
-    /// config that spells ghostty's default out again, since a re-typed default
-    /// and a default are the same two bytes to `ghostty_config_trigger`.
+    /// (`GhosttyConfig.isRebound`). This window has hosts and spaces in it that
+    /// ghostty has no actions for, and they need the same arrows: ⌥⌘↑ and ⌥⌘↓
+    /// walk the spaces, so the splits ghostty puts there move over to
+    /// ⇧⌘arrows. Moving `goto_split:up` somewhere else in the config still
+    /// moves the menu item — the one thing that cannot be honoured is a config
+    /// that spells ghostty's default out again, since a re-typed default and a
+    /// default are the same two bytes to `ghostty_config_trigger`.
     /// An item that ships with no key of its own — Open Terminal Config, whose
     /// ⌘, *is* ghostty's default — takes the binding either way.
     ///
@@ -410,8 +406,8 @@ extension NSMenu {
     ///
     /// *Whichever* default it is. Stepping aside used to be for items with no
     /// ghostty action at all, which left the collision this app is most likely
-    /// to cause: a `keybind = super+alt+right=next_tab` pulls Next Tab onto the
-    /// arrows the splits ship on, and both items have an action, so neither
+    /// to cause: a `keybind = super+shift+right=next_tab` pulls Next Tab onto
+    /// the arrows the splits ship on, and both items have an action, so neither
     /// yielded and Select Split Right quietly stopped working. An item keeps a
     /// key only if the config is what gave it that key; anything still wearing
     /// its own default gets out of the way of a binding the user wrote.

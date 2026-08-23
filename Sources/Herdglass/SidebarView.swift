@@ -23,7 +23,7 @@ struct SidebarModel {
         var offline: Bool = false
         var busy: Bool = false
         var symbol: String?
-        /// The key that selects this row, already rendered (`⇧⌘3`). Nil on
+        /// The key that selects this row, already rendered (`⌥⌘3`). Nil on
         /// every row no key reaches — a host row, and any space past the ninth
         /// counting down the whole sidebar — because a number drawn where
         /// nothing answers it is what made the old prefixes noise. A row's key

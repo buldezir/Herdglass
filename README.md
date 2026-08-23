@@ -163,11 +163,16 @@ hand it to. Turn it off in **Herdglass → Settings…**.
 
 ## Settings
 
-Two things, because they are the two that neither ghostty nor Herdr can state:
+Three things, because they are the ones that neither ghostty nor Herdr can state:
 
 - **Interface text size** — how big this app draws its own chrome: the sidebar,
   the tab strip, the labels around a terminal. The terminal's font is still
   `font-size` in your ghostty config. Every step applies at once, everywhere.
+- **Select a space with `⌥⌘1`…`⌥⌘9`** — off by default: nine chords the app
+  takes before the pane sees them, and nine numbers on the sidebar that mean
+  nothing while nothing answers them. Turned on, the first nine space rows show
+  the key that selects them; turned off, the rows go back to being unnumbered.
+  `⌥⌘↑`/`⌥⌘↓` walk the same rows either way.
 - **Notifications** — the switch described above.
 
 Anything that describes a *terminal* belongs in the ghostty config, and anything
@@ -237,10 +242,10 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌘W` | Close: the pane, in a split; the tab, when the tab has one pane |
 | `⌥⌘W` | Close tab, split or not (`⇧⌘W` closes the window, and the app) |
 | `⌘D` / `⇧⌘D` | Split the active pane right / down |
-| `⌥⌘←↑↓→` | Move the keyboard to the pane in that direction |
-| `⇧⌘1`…`⇧⌘9` | Space in that row of the sidebar, hosts included — the row shows the key |
-| `⇧⌘←` / `⇧⌘→` | Previous / next tab |
-| `⇧⌘↑` / `⇧⌘↓` | Previous / next space, down the whole sidebar (hosts included) |
+| `⇧⌘←↑↓→` | Move the keyboard to the pane in that direction |
+| `⌥⌘1`…`⌥⌘9` | Space in that row of the sidebar, hosts included — off until Settings turns it on |
+| `⌥⌘←` / `⌥⌘→` | Previous / next tab |
+| `⌥⌘↑` / `⌥⌘↓` | Previous / next space, down the whole sidebar (hosts included) |
 | `⇧⌘U` | Jump to the pane that needs attention (any host) |
 | `⌃⌘S` | Toggle sidebar |
 | `⌃⌘F` | Full screen |
@@ -248,22 +253,19 @@ Defaults, and all of them movable with `keybind` (see above).
 
 Tabs are not numbered — not in the strip, not in a sidebar row's list of them,
 and no key picks one by number. A tab is named after what is running in it, and
-⇧⌘←/→ walk the strip. A space row carries its own key hint (`⇧⌘3`, dim, on the
-right) on the nine rows the key reaches, so a number is only ever drawn where it
-means something; an unread count takes that corner instead, and the key moves
-into the row's tooltip.
-The prefix is the level: `⇧⌘` reaches tabs and spaces, `⌥⌘` reaches the splits
+⌥⌘←/→ walk the strip. Spaces are not numbered either until you switch
+`⌥⌘1`…`⌥⌘9` on in Settings; then a space row carries its own key hint (`⌥⌘3`,
+dim, on the right) on the nine rows the key reaches, so a number is only ever
+drawn where it means something; an unread count takes that corner instead, and
+the key moves into the row's tooltip.
+The prefix is the level: `⌥⌘` reaches tabs and spaces, `⇧⌘` reaches the splits
 inside a tab. The nine keys count rows straight down the sidebar rather than
-restarting at each host, so with two hosts attached the fourth row is `⇧⌘4`
+restarting at each host, so with two hosts attached the fourth row is `⌥⌘4`
 wherever the host boundary falls — which does mean a row's key shifts when a
 host above it attaches or opens a space.
 
-macOS binds `⇧⌘3`…`⇧⌘6` to its own screenshot service and takes them above any
-app, so those four rows answer only once Screenshots is cleared in System
-Settings → Keyboard → Keyboard Shortcuts.
-
 `⌘,` is ghostty's own `open_config` binding, and this app honours it. Settings —
-the app's own window, with the notification switch — is in the Herdglass menu,
+the app's own window, with those three switches — is in the Herdglass menu,
 and takes `⌘,` only if your ghostty config points `open_config` somewhere else.
 
 Clicking a pane moves the keyboard into it — that is also how the active pane of a split changes, and Herdr is told about it. Arrow keys browse the sidebar without stealing focus. The sidebar is draggable between 180 and 460 pt and its width is remembered.

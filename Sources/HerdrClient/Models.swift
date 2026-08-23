@@ -69,7 +69,7 @@ public struct SessionSnapshot: Codable, Sendable {
     /// ordinal, the one thing about a space that does not move between two
     /// processes, so it is the only order the sidebar can use without
     /// disagreeing with itself. It is the sort key and nothing more: the rows
-    /// are *named* by position, which is what ⇧⌘1…⇧⌘9 count
+    /// are *named* by position, which is what ⌥⌘1…⌥⌘9 count
     /// (`spacePositionIgnoresTheGapsInHerdrsNumbering`).
     /// The id breaks a tie because `sorted` is not a stable sort, and a tie that
     /// resolves differently on each poll is the same shuffle one snapshot later.

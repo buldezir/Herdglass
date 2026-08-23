@@ -92,7 +92,7 @@ final class SplitContainerView: NSView {
 
     /// Follow the active pane with the keyboard when the active pane changes.
     ///
-    /// ⌥⌘arrow is a *focus* move and nothing else: the same views stay in the
+    /// ⇧⌘arrow is a *focus* move and nothing else: the same views stay in the
     /// same window, so `restoreFocusIfLost` finds no vacancy and does nothing —
     /// which left the accent border on the pane Herdr had moved to while the
     /// keystrokes kept going to the one before it. The border and the keyboard

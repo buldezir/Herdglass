@@ -6,9 +6,10 @@ import UserNotifications
 /// Terminal settings still come from the user's ghostty config and pane settings
 /// from the Herdr server; nothing that either of those can express belongs here.
 /// What is left is how this app behaves as a macOS app: whether Herdr's
-/// notifications reach Notification Center, and how big the chrome around the
-/// terminals is drawn — a size that is nobody else's to state, because ghostty's
-/// `font-size` is the terminal's own and Herdr has no window.
+/// notifications reach Notification Center, whether ⌥⌘1…⌥⌘9 are this app's keys
+/// or the terminal's, and how big the chrome around the terminals is drawn — a
+/// size that is nobody else's to state, because ghostty's `font-size` is the
+/// terminal's own and Herdr has no window.
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let notifications = NSButton(
@@ -19,6 +20,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// Shown only when macOS itself is refusing the notifications the checkbox
     /// says are on, because the toggle alone cannot explain that silence.
     private let deniedRow = NSStackView()
+    /// Spelled out of `SpaceKeys` rather than typed here, so the title names the
+    /// keys the monitor actually watches for.
+    private let spaceKeys = NSButton(
+        checkboxWithTitle: "Select a space with "
+            + "\(SpaceKeys.display(SpaceKeys.positions.lowerBound))…"
+            + "\(SpaceKeys.display(SpaceKeys.positions.upperBound))",
+        target: nil,
+        action: nil
+    )
     private let fontSize = NSStepper()
     private let fontSizeValue = NSTextField(labelWithString: "")
     private var fontSizeValueWidth: NSLayoutConstraint?
@@ -64,9 +74,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             + "config, and a pane's contents belong to the Herdr server."
         )
 
-        let separator = NSBox()
-        separator.boxType = .separator
-        separator.translatesAutoresizingMaskIntoConstraints = false
+        let keyboardHeading = label("Keyboard", size: 13, weight: .semibold)
+        spaceKeys.target = self
+        spaceKeys.action = #selector(toggleSpaceKeys)
+        spaceKeys.setAccessibilityIdentifier("SpaceKeysCheckbox")
+        let spaceKeysExplanation = wrappingLabel(
+            "Off by default: nine chords the app takes before the pane sees them, and nine "
+            + "numbers on the sidebar that mean nothing while nothing answers them. Turned on, "
+            + "each of the first nine space rows shows the key that selects it, counting "
+            + "straight down the sidebar through every attached host. ⌥⌘↑ and ⌥⌘↓ walk the "
+            + "same rows either way."
+        )
 
         let heading = label("Notifications", size: 13, weight: .semibold)
 
@@ -80,8 +98,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         buildDeniedRow()
 
+        let separators = [separator(), separator()]
         let stack = NSStackView(views: [
-            appearanceHeading, sizeRow, sizeExplanation, separator,
+            appearanceHeading, sizeRow, sizeExplanation, separators[0],
+            keyboardHeading, spaceKeys, spaceKeysExplanation, separators[1],
             heading, notifications, explanation, deniedRow,
         ])
         stack.orientation = .vertical
@@ -90,9 +110,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
         stack.setCustomSpacing(4, after: sizeRow)
         stack.setCustomSpacing(16, after: sizeExplanation)
-        stack.setCustomSpacing(16, after: separator)
+        stack.setCustomSpacing(4, after: spaceKeys)
+        stack.setCustomSpacing(16, after: spaceKeysExplanation)
         stack.setCustomSpacing(4, after: notifications)
         stack.setCustomSpacing(14, after: explanation)
+        for line in separators { stack.setCustomSpacing(16, after: line) }
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let controller = NSViewController()
@@ -100,7 +122,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // Autolayout sizes the window from here; the width has to come from
         // somewhere, and the wrapping label would otherwise pick its own.
         stack.widthAnchor.constraint(equalToConstant: 420).isActive = true
-        separator.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        for line in separators {
+            line.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
+        }
         return controller
     }
 
@@ -142,6 +166,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return field
     }
 
+    private func separator() -> NSBox {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        return box
+    }
+
     private func wrappingLabel(_ text: String) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: text)
         field.font = ChromeMetrics.font(11)
@@ -172,6 +203,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private func applySettings() {
         notifications.state = AgentNotifications.isEnabled ? .on : .off
+        spaceKeys.state = SpaceKeys.isEnabled ? .on : .off
         fontSize.doubleValue = ChromeMetrics.fontSize
         fontSizeValue.stringValue = "\(Int(ChromeMetrics.fontSize)) pt"
         fontSizeValue.font = .monospacedDigitSystemFont(ofSize: ChromeMetrics.length(11), weight: .regular)
@@ -180,6 +212,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             guard let self else { return }
             self.deniedRow.isHidden = status != .denied || !AgentNotifications.isEnabled
         }
+    }
+
+    /// Every open window's sidebar numbers or unnumbers its rows on the way out
+    /// of this, and its key monitor answers the digits from the next keystroke.
+    @objc private func toggleSpaceKeys(_ sender: NSButton) {
+        SpaceKeys.isEnabled = sender.state == .on
     }
 
     @objc private func toggleNotifications(_ sender: NSButton) {

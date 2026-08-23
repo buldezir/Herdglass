@@ -299,7 +299,7 @@ private let gappyPanes = """
     #expect(snapshot.orderedWorkspaces.map(\.number) == [1, 2, 3])
 }
 
-/// ⇧⌘1…⇧⌘9 count rows down the sidebar rather than matching
+/// ⌥⌘1…⌥⌘9 count rows down the sidebar rather than matching
 /// `WorkspaceInfo.number`, which is a stable ordinal with gaps. This pins the
 /// expression the key monitor and the sidebar's hints both index a host's
 /// spaces with, so a host whose spaces read 2, 7, 9 contributes three rows in

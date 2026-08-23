@@ -66,6 +66,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             name: GhosttyRuntime.configDidChangeNotification,
             object: nil
         )
+        // The monitor reads the setting per keystroke, so this is only about the
+        // hints: turning the keys on in Settings has to number the rows in front
+        // of the user, not on the next snapshot.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refresh),
+            name: SpaceKeys.didChangeNotification,
+            object: nil
+        )
         installSpaceKeyMonitor()
         refresh()
 
@@ -290,27 +299,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Keyboard
 
-    /// The modifiers that pick a space by its row in the sidebar. The monitor
-    /// below and the hints the sidebar draws on its rows both read it from
-    /// here: a row that names a key nothing answers is worse than a row that
-    /// names none, and that is exactly what the old numbers had become.
-    private static let spaceKeyModifiers: NSEvent.ModifierFlags = [.command, .shift]
-
     /// Picking a space by its row in the sidebar. A menu item cannot express it
     /// (the set changes with every snapshot), so it is a monitor — scoped to
     /// this window, and torn down with it, so a closed window can never swallow
     /// another window's keystrokes.
     ///
-    /// ⇧⌘1…⇧⌘9, the same modifier as the ⇧⌘↑/↓ that walk the same list one row
-    /// at a time — spaces and tabs are ⇧⌘ throughout, and the splits below them
-    /// are ⌥⌘. **⇧⌘3…⇧⌘6 are the system's screenshot hotkeys**, taken above the
-    /// app on a stock Mac, so those four rows answer only where Screenshots has
-    /// been cleared in System Settings.
+    /// ⌥⌘1…⌥⌘9, off until Settings turns them on (`SpaceKeys`), which the
+    /// monitor asks per keystroke rather than by installing and removing itself:
+    /// there is then one answer to "is this key mine" and no window that missed
+    /// the toggle.
     ///
     /// Tabs have no key of their own. They had ⌘1…⌘9, read from the config's
     /// `goto_tab` binds, and it went when the numbers did: a strip that does not
     /// number its tabs cannot tell you which one ⌘4 is, and counting them by eye
-    /// to reach the fourth is slower than clicking it. ⇧⌘←/→ still walk them.
+    /// to reach the fourth is slower than clicking it. ⌥⌘←/→ still walk them.
     private func installSpaceKeyMonitor() {
         spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
@@ -320,11 +322,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
             // Out before doing any work on an ordinary keystroke: this monitor
             // sees everything the user types into a terminal.
-            guard modifiers == Self.spaceKeyModifiers else { return event }
+            guard modifiers == SpaceKeys.modifiers, SpaceKeys.isEnabled else { return event }
             // Unshifted, so the digit is the digit whatever else is held down.
             guard
                 let characters = (event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers),
-                let position = Int(characters), (1...9).contains(position)
+                let position = Int(characters), SpaceKeys.positions.contains(position)
             else { return event }
             // Rows, counted down the whole sidebar — not `WorkspaceInfo.number`,
             // which is a stable ordinal with gaps, and no longer one host's
@@ -454,7 +456,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func selectPreviousSpace() { step(spacesBy: -1) }
 
     /// Every attached host's spaces, in sidebar order, as one list. Both ways
-    /// of reaching a space read it: ⇧⌘↑/↓ step along it and ⇧⌘1…⇧⌘9 index into
+    /// of reaching a space read it: ⌥⌘↑/↓ step along it and ⌥⌘1…⌥⌘9 index into
     /// it, so the ninth row down the sidebar is the ninth row down the sidebar
     /// whichever way you go at it.
     ///
@@ -474,7 +476,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         select(focusTerminal: true) { $0.selectSpace(target.space) }
     }
 
-    /// Down the whole sidebar, not one folder of it: ⇧⌘↑ and ⇧⌘↓ walk every
+    /// Down the whole sidebar, not one folder of it: ⌥⌘↑ and ⌥⌘↓ walk every
     /// attached host's spaces in sidebar order and wrap, so the last space of
     /// one host steps into the first space of the next and the host selection
     /// follows.
@@ -598,6 +600,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: GhosttyRuntime.configDidChangeNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: SpaceKeys.didChangeNotification, object: nil)
         if let spaceKeyMonitor {
             NSEvent.removeMonitor(spaceKeyMonitor)
             self.spaceKeyMonitor = nil
@@ -634,7 +637,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Rendering
 
-    private func refresh() {
+    @objc private func refresh() {
         guard let window else { return }
         let session = connections.selectedSession
         let pane = session?.selectedPane
@@ -735,13 +738,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         "\(connectionId)/\(workspaceId)"
     }
 
-    /// The key that selects the space in that position, spelled the way the
-    /// menu spells its own — via `Shortcut.display`, so a hint and a menu item
-    /// can never disagree about how a modifier is drawn.
-    private static func spaceKey(_ position: Int) -> String {
-        GhosttyConfig.Shortcut(keyEquivalent: "\(position)", modifiers: spaceKeyModifiers).display
-    }
-
     private static func spaceRow(_ rowId: String) -> (connectionId: String, workspaceId: String)? {
         guard let slash = rowId.firstIndex(of: "/") else { return nil }
         return (String(rowId[rowId.startIndex..<slash]), String(rowId[rowId.index(after: slash)...]))
@@ -749,6 +745,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func buildSidebarModel() -> SidebarModel {
         var model = SidebarModel()
+        // Asked once for the whole sidebar, so the setting cannot change halfway
+        // down it and leave the hints starting at 4.
+        let spaceKeys = SpaceKeys.isEnabled
         // How many space rows are already above this host's, so the hints count
         // down the sidebar exactly as `orderedSpaces` does. Both walk
         // `connections.connections` in order and skip a host with no spaces, so
@@ -773,10 +772,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 )
             )
             // The key hint goes on the rows the key reaches and nowhere else:
-            // the first nine spaces in the sidebar, wherever they fall. Every
-            // host numbering its own spaces from 1 is what emptied the old
-            // prefixes out — three attached hosts drew three columns of 1, 2,
-            // 3, and a digit that repeats down the sidebar cannot be a key.
+            // the first nine spaces in the sidebar, wherever they fall, and none
+            // of them while the keys are off. Every host numbering its own
+            // spaces from 1 is what emptied the old prefixes out — three
+            // attached hosts drew three columns of 1, 2, 3, and a digit that
+            // repeats down the sidebar cannot be a key.
             model.spaces[connection.id] = session.spaces.enumerated().map { index, space in
                 let count = session.unreadCount(inSpace: space.workspaceId)
                 let row = rowsAbove + index
@@ -788,7 +788,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     status: session.effectiveStatus(ofSpace: space),
                     unread: count > 0,
                     badge: count,
-                    shortcut: row < 9 ? Self.spaceKey(row + 1) : nil
+                    shortcut: spaceKeys && SpaceKeys.positions.contains(row + 1)
+                        ? SpaceKeys.display(row + 1)
+                        : nil
                 )
             }
             rowsAbove += session.spaces.count
