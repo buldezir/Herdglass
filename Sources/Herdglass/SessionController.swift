@@ -531,12 +531,6 @@ final class SessionController {
         snapshot?.title(ofTab: tab) ?? tab.label
     }
 
-    /// Where a tab sits in its space — what the strip numbers and ⌘1…⌘9 mean.
-    /// Never `TabInfo.number`, which has gaps.
-    func position(ofTab tab: TabInfo) -> Int {
-        snapshot?.position(ofTab: tab) ?? Int(tab.number)
-    }
-
     /// Every tab in a space, shortest useful form, for the sidebar row.
     func tabSummaries(inSpace workspaceId: String) -> [String] {
         snapshot?.tabSummaries(inWorkspace: workspaceId) ?? []

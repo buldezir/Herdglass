@@ -5,7 +5,6 @@ import HerdrClient
 struct TabBarModel {
     struct Item {
         var id: String
-        var number: UInt
         var title: String
         var status: AgentStatus
         var unread: Bool
@@ -286,7 +285,7 @@ private final class TabItemView: NSView {
         paneCount.isHidden = item.paneCount <= 1
         dot.update(status: item.status, unread: item.unread)
         isSelected = item.selected
-        toolTip = "Tab \(item.number): \(item.title)"
+        toolTip = item.title
         setAccessibilityIdentifier("Tab-\(item.id)")
         updateAppearance()
     }

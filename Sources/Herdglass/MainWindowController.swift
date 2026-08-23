@@ -16,7 +16,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let blur = NSVisualEffectView()
     private var splitItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
-    private var numberKeyMonitor: Any?
+    private var spaceKeyMonitor: Any?
 
     /// `restoringHosts` belongs to a launch with nothing named on the command
     /// line: `--connect somewhere` asked for one host, and dialling the
@@ -66,7 +66,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             name: GhosttyRuntime.configDidChangeNotification,
             object: nil
         )
-        installNumberKeyMonitor()
+        installSpaceKeyMonitor()
         refresh()
 
         DispatchQueue.main.async { [weak self] in
@@ -290,54 +290,50 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Keyboard
 
-    /// Picking a tab or a space by number. Menu items cannot express either
-    /// (both sets change with every snapshot), so it is a monitor — scoped to
+    /// The modifiers that pick a space by its row in the sidebar. The monitor
+    /// below and the hints the sidebar draws on its rows both read it from
+    /// here: a row that names a key nothing answers is worse than a row that
+    /// names none, and that is exactly what the old numbers had become.
+    private static let spaceKeyModifiers: NSEvent.ModifierFlags = [.command, .shift]
+
+    /// Picking a space by its row in the sidebar. A menu item cannot express it
+    /// (the set changes with every snapshot), so it is a monitor — scoped to
     /// this window, and torn down with it, so a closed window can never swallow
     /// another window's keystrokes.
     ///
-    /// The tab keys are whatever the ghostty config binds `goto_tab:1`…
-    /// `goto_tab:9` to, ⌘1…⌘9 by default. Spaces stay on ⌃⌘1…⌃⌘9: a Herdr
-    /// workspace has no ghostty counterpart, so there is no keybind to read, and
-    /// a tab key that collides with it wins because tabs are checked first.
-    private func installNumberKeyMonitor() {
-        numberKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+    /// ⇧⌘1…⇧⌘9, the same modifier as the ⇧⌘↑/↓ that walk the same list one row
+    /// at a time — spaces and tabs are ⇧⌘ throughout, and the splits below them
+    /// are ⌥⌘. **⇧⌘3…⇧⌘6 are the system's screenshot hotkeys**, taken above the
+    /// app on a stock Mac, so those four rows answer only where Screenshots has
+    /// been cleared in System Settings.
+    ///
+    /// Tabs have no key of their own. They had ⌘1…⌘9, read from the config's
+    /// `goto_tab` binds, and it went when the numbers did: a strip that does not
+    /// number its tabs cannot tell you which one ⌘4 is, and counting them by eye
+    /// to reach the fourth is slower than clicking it. ⇧⌘←/→ still walk them.
+    private func installSpaceKeyMonitor() {
+        spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
-            // Only the four modifiers a ghostty trigger can carry: `.numericPad`
-            // rides along on the keypad digits, `.function` on anything above the
-            // row of numbers, and caps lock is never part of a shortcut.
+            // `.numericPad` rides along on the keypad digits, `.function` on
+            // anything above the row of numbers, and caps lock is never part of
+            // a shortcut.
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-            // Out before doing any work on an ordinary keystroke: every tab and
-            // space key carries at least one of ⌘/⌃/⌥, and this monitor sees
-            // everything the user types into a terminal.
-            guard !modifiers.intersection([.command, .control, .option]).isEmpty else { return event }
-            // Unshifted, so a `shift+cmd+1` binding is looked up as "1" rather
-            // than as whatever that key types with shift held — which is what
-            // ghostty's own trigger for it says.
+            // Out before doing any work on an ordinary keystroke: this monitor
+            // sees everything the user types into a terminal.
+            guard modifiers == Self.spaceKeyModifiers else { return event }
+            // Unshifted, so the digit is the digit whatever else is held down.
             guard
-                let characters = (event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers)?
-                    .lowercased(),
-                let session = self.connections.selectedSession
+                let characters = (event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers),
+                let position = Int(characters), (1...9).contains(position)
             else { return event }
-            let shortcut = GhosttyConfig.Shortcut(keyEquivalent: characters, modifiers: modifiers)
-
-            if let number = GhosttyRuntime.config.tabShortcuts[shortcut] {
-                // By position: `tabs` is already in strip order, and matching
-                // on `TabInfo.number` would land on a different tab than the one
-                // wearing that number in the strip as soon as one is closed.
-                guard let tab = session.tabsInSelectedSpace.dropFirst(Int(number) - 1).first
-                else { return event }
-                self.select(focusTerminal: true) { $0.selectTab(tab.tabId) }
-                return nil
-            }
-
-            guard modifiers == [.command, .control],
-                  let number = UInt(characters), (1...9).contains(number)
-            else { return event }
-            let spaces = session.spaces
-            guard let space = spaces.first(where: { $0.number == number })
-                ?? spaces.dropFirst(Int(number) - 1).first
-            else { return event }
-            self.select(focusTerminal: true) { $0.selectSpace(space.workspaceId) }
+            // Rows, counted down the whole sidebar — not `WorkspaceInfo.number`,
+            // which is a stable ordinal with gaps, and no longer one host's
+            // folder either. Nine keys spread over every attached host reach
+            // nine different spaces; nine keys per host reached one host's and
+            // left the rest of the sidebar unaddressable without selecting it
+            // first, which is the thing the key was supposed to save.
+            guard let target = self.orderedSpaces.dropFirst(position - 1).first else { return event }
+            self.selectSpace(target)
             return nil
         }
     }
@@ -457,19 +453,33 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func selectNextSpace() { step(spacesBy: 1) }
     @objc func selectPreviousSpace() { step(spacesBy: -1) }
 
-    /// Down the whole sidebar, not one folder of it: ⌥⌘↑ and ⌥⌘↓ walk every
-    /// attached host's spaces in sidebar order and wrap, so the last space of
-    /// one host steps into the first space of the next and the host selection
-    /// follows. (⌃⌘1…⌃⌘9 stay within the selected host — they name a space by
-    /// its number, which only means anything inside one.)
+    /// Every attached host's spaces, in sidebar order, as one list. Both ways
+    /// of reaching a space read it: ⇧⌘↑/↓ step along it and ⇧⌘1…⇧⌘9 index into
+    /// it, so the ninth row down the sidebar is the ninth row down the sidebar
+    /// whichever way you go at it.
     ///
-    /// A host that is remembered but not attached has no spaces and is simply
-    /// not in the walk: stepping past it must not dial it, the way selecting
-    /// its row would.
-    private func step(spacesBy offset: Int) {
-        let spaces = connections.connections.flatMap { connection in
+    /// A host that is remembered but not attached has no spaces and so is
+    /// simply not in the list: stepping or counting past it must not dial it,
+    /// the way selecting its row would.
+    private var orderedSpaces: [(host: String, space: String)] {
+        connections.connections.flatMap { connection in
             connection.session.spaces.map { (host: connection.id, space: $0.workspaceId) }
         }
+    }
+
+    /// Land on a space that may belong to a host other than the selected one,
+    /// bringing the host selection with it.
+    private func selectSpace(_ target: (host: String, space: String)) {
+        if target.host != connections.selectedConnectionId { connections.select(target.host) }
+        select(focusTerminal: true) { $0.selectSpace(target.space) }
+    }
+
+    /// Down the whole sidebar, not one folder of it: ⇧⌘↑ and ⇧⌘↓ walk every
+    /// attached host's spaces in sidebar order and wrap, so the last space of
+    /// one host steps into the first space of the next and the host selection
+    /// follows.
+    private func step(spacesBy offset: Int) {
+        let spaces = orderedSpaces
         guard !spaces.isEmpty else { return }
         // With nothing selected yet, step in from the end the user is coming
         // from rather than doing nothing.
@@ -477,9 +487,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             $0.host == connections.selectedConnectionId
                 && $0.space == connections.selectedSession?.selectedSpace?.workspaceId
         } ?? (offset > 0 ? -1 : 0)
-        let next = spaces[(current + offset + spaces.count) % spaces.count]
-        if next.host != connections.selectedConnectionId { connections.select(next.host) }
-        select(focusTerminal: true) { $0.selectSpace(next.space) }
+        selectSpace(spaces[(current + offset + spaces.count) % spaces.count])
     }
 
     /// Closing a tab destroys its panes on the server, so ask first when there
@@ -590,9 +598,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: GhosttyRuntime.configDidChangeNotification, object: nil)
-        if let numberKeyMonitor {
-            NSEvent.removeMonitor(numberKeyMonitor)
-            self.numberKeyMonitor = nil
+        if let spaceKeyMonitor {
+            NSEvent.removeMonitor(spaceKeyMonitor)
+            self.spaceKeyMonitor = nil
         }
         // Tear the SSH masters, event threads and bridges down now rather than
         // waiting for ControlPersist to expire.
@@ -727,6 +735,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         "\(connectionId)/\(workspaceId)"
     }
 
+    /// The key that selects the space in that position, spelled the way the
+    /// menu spells its own — via `Shortcut.display`, so a hint and a menu item
+    /// can never disagree about how a modifier is drawn.
+    private static func spaceKey(_ position: Int) -> String {
+        GhosttyConfig.Shortcut(keyEquivalent: "\(position)", modifiers: spaceKeyModifiers).display
+    }
+
     private static func spaceRow(_ rowId: String) -> (connectionId: String, workspaceId: String)? {
         guard let slash = rowId.firstIndex(of: "/") else { return nil }
         return (String(rowId[rowId.startIndex..<slash]), String(rowId[rowId.index(after: slash)...]))
@@ -734,6 +749,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private func buildSidebarModel() -> SidebarModel {
         var model = SidebarModel()
+        // How many space rows are already above this host's, so the hints count
+        // down the sidebar exactly as `orderedSpaces` does. Both walk
+        // `connections.connections` in order and skip a host with no spaces, so
+        // the nth hint and the nth key are the same row by construction rather
+        // than by two rules agreeing.
+        var rowsAbove = 0
         for connection in connections.connections {
             let session = connection.session
             let unread = session.unreadPaneIds.count
@@ -751,18 +772,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     symbol: connection.target.isLocal ? "desktopcomputer" : "server.rack"
                 )
             )
-            model.spaces[connection.id] = session.spaces.map { space in
+            // The key hint goes on the rows the key reaches and nowhere else:
+            // the first nine spaces in the sidebar, wherever they fall. Every
+            // host numbering its own spaces from 1 is what emptied the old
+            // prefixes out — three attached hosts drew three columns of 1, 2,
+            // 3, and a digit that repeats down the sidebar cannot be a key.
+            model.spaces[connection.id] = session.spaces.enumerated().map { index, space in
                 let count = session.unreadCount(inSpace: space.workspaceId)
+                let row = rowsAbove + index
                 return SidebarModel.Row(
                     id: Self.spaceRowId(connection.id, space.workspaceId),
                     kind: .space,
-                    title: "\(space.number)  \(session.title(ofSpace: space))",
+                    title: session.title(ofSpace: space),
                     subtitle: spaceSubtitle(space, session: session),
                     status: session.effectiveStatus(ofSpace: space),
                     unread: count > 0,
-                    badge: count
+                    badge: count,
+                    shortcut: row < 9 ? Self.spaceKey(row + 1) : nil
                 )
             }
+            rowsAbove += session.spaces.count
         }
 
         if let connection = connections.selected {
@@ -807,8 +836,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             let panes = session.panes(inTab: tab.tabId)
             return TabBarModel.Item(
                 id: tab.tabId,
-                number: UInt(session.position(ofTab: tab)),
-                title: tabTitle(tab, session: session),
+                title: session.title(ofTab: tab),
                 status: session.effectiveStatus(ofTab: tab),
                 unread: session.unreadCount(inTab: tab.tabId) > 0,
                 paneCount: panes.count,
@@ -818,12 +846,4 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return model
     }
 
-    /// The number is the tab's *position*, not `TabInfo.number` — that one has
-    /// gaps, so a strip keyed on it disagrees with both Herdr's own labels and
-    /// the ⌘1…⌘9 that select the tabs.
-    private func tabTitle(_ tab: TabInfo, session: SessionController) -> String {
-        let name = session.title(ofTab: tab)
-        let position = session.position(ofTab: tab)
-        return name.isEmpty ? "\(position)" : "\(position)  \(name)"
-    }
 }

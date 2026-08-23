@@ -181,10 +181,6 @@ struct GhosttyConfig {
         }
     }()
 
-    /// `goto_tab:1`…`goto_tab:9`, keyed by shortcut, so the ⌘1…⌘9 monitor can
-    /// look an event up instead of assuming ⌘digit.
-    private(set) var tabShortcuts: [Shortcut: UInt] = [:]
-
     /// The colour to paint behind a terminal, and the colour to write on it.
     ///
     /// These fall back to AppKit's semantic colours when `hasLightDarkTheme`
@@ -267,12 +263,6 @@ struct GhosttyConfig {
         for action in Action.allCases {
             guard let shortcut = Self.shortcut(config, action.rawValue) else { continue }
             shortcuts[action] = shortcut
-        }
-        for number in UInt(1)...9 {
-            guard let shortcut = Self.shortcut(config, "goto_tab:\(number)") else { continue }
-            // First binding wins, so a config that points two keys at one tab
-            // cannot make the later one shadow a different tab's key.
-            if tabShortcuts[shortcut] == nil { tabShortcuts[shortcut] = number }
         }
     }
 
@@ -480,9 +470,6 @@ extension GhosttyConfig {
         lines.append("keybind")
         for action in Action.allCases {
             row(action.rawValue, shortcut(action)?.display ?? "(unbound here)")
-        }
-        for (shortcut, number) in tabShortcuts.sorted(by: { $0.value < $1.value }) {
-            row("goto_tab:\(number)", shortcut.display)
         }
         return lines.joined(separator: "\n")
     }

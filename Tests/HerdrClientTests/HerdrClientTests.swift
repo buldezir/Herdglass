@@ -294,8 +294,37 @@ private let gappyPanes = """
     let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
     #expect(snapshot.workspaces.map(\.workspaceId) == ["wc", "wa", "wb"])
     #expect(snapshot.orderedWorkspaces.map(\.workspaceId) == ["wa", "wb", "wc"])
-    // The order the rows already claim: ⌃⌘1…⌃⌘9 name a space by its number.
+    // The order the rows already claim. `number` is the sort key, not the name:
+    // see `spacePositionIgnoresTheGapsInHerdrsNumbering`.
     #expect(snapshot.orderedWorkspaces.map(\.number) == [1, 2, 3])
+}
+
+/// ⇧⌘1…⇧⌘9 count rows down the sidebar rather than matching
+/// `WorkspaceInfo.number`, which is a stable ordinal with gaps. This pins the
+/// expression the key monitor and the sidebar's hints both index a host's
+/// spaces with, so a host whose spaces read 2, 7, 9 contributes three rows in
+/// that order and no key lands anywhere else.
+@Test func spacePositionIgnoresTheGapsInHerdrsNumbering() throws {
+    let numbers = [2, 7, 9]
+    let workspaces = numbers.map { number in
+        """
+        {"workspace_id": "w\(number)", "number": \(number), "label": "w\(number)", "focused": false,
+         "pane_count": 0, "tab_count": 0, "active_tab_id": "w\(number):t1", "agent_status": "idle"}
+        """
+    }
+    let json = """
+    {"version": "0.8.2", "protocol": 20, "workspaces": [\(workspaces.reversed().joined(separator: ","))],
+     "tabs": [], "panes": [], "agents": []}
+    """
+    let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
+    let ordered = snapshot.orderedWorkspaces
+    #expect(ordered.map(\.number) == [2, 7, 9])
+    for position in 1...3 {
+        #expect(ordered.dropFirst(position - 1).first?.workspaceId == "w\(numbers[position - 1])")
+    }
+    // Nothing past this host's last row: the next key belongs to the next
+    // host's first space, not to this host's first one.
+    #expect(ordered.dropFirst(3).first == nil)
 }
 
 /// `sorted` is not a stable sort, so spaces sharing a number would settle in a
@@ -342,12 +371,15 @@ private let gappyPanes = """
 
 @Test func aSpaceRowListsEveryTab() throws {
     let snapshot = try titleSnapshot(tabs: gappyTabs, panes: gappyPanes, agents: namedAgent)
-    #expect(
-        snapshot.tabSummaries(inWorkspace: "w8") == ["1 reviewer", "2 scratch", "3 docs"]
-    )
-    // A space with nothing in it lists nothing, rather than a stray number.
+    // Names only: the strip does not number its tabs and no key picks one by
+    // number, so a position in front of each would be counting for its own sake
+    // at the truncating end of the line.
+    #expect(snapshot.tabSummaries(inWorkspace: "w8") == ["reviewer", "scratch", "docs"])
+    // A tab with nothing to be named after is dropped rather than printed as
+    // the bare position its label falls back to, so a space with nothing in it
+    // lists nothing and the row falls back to saying where it is.
     let empty = try titleSnapshot(panes: "")
-    #expect(empty.tabSummaries(inWorkspace: "w8") == ["1"])
+    #expect(empty.tabSummaries(inWorkspace: "w8").isEmpty)
     #expect(empty.tabSummaries(inWorkspace: "nope").isEmpty)
 }
 

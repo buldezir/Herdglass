@@ -63,7 +63,7 @@ hand to anyone else.
 
 Connect with an SSH config Host (the same target you would pass to `herdr --remote workbox`), `ssh://user@host:22`, or `local` to attach to a Herdr server on this Mac. The optional session name matches `herdr --remote host --session agents`.
 
-Hosts you have used before are listed in the sidebar, dimmed, on the next launch; clicking one attaches it. ⌘K adds another host to the same window rather than replacing the current one, and each host keeps its own connection, spaces and selection. Right-click a folder for New Space, Reconnect, Disconnect and Remove Host.
+Hosts you have used before are listed in the sidebar, dimmed, on the next launch; clicking one attaches it. ⌘K adds another host to the same window rather than replacing the current one, and each host keeps its own connection, spaces and selection. Right-click a folder for New Space, Reconnect, Disconnect and Remove Host — ⌥⌘T does the same for the selected host, one modifier out from the ⌘T that makes a tab.
 
 To skip the connect sheet, name the target on the command line:
 
@@ -208,7 +208,7 @@ app by configuring ghostty:
 | `window-save-state` | `never` stops the window remembering its position |
 | `confirm-close-surface` | `false` never asks before closing a tab, `always` always does |
 | `focus-follows-mouse` | Hovering a pane of a split moves the keyboard into it |
-| `keybind` | Moves this app's menu shortcuts. `new_tab`, `close_surface`, `close_tab`, `close_window`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `goto_tab:1`…`9`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
+| `keybind` | Moves this app's menu shortcuts. `new_tab`, `close_surface`, `close_tab`, `close_window`, `quit`, `new_split:right`/`:down`, `goto_split:left`/`right`/`up`/`down`, `next_tab`, `previous_tab`, `reload_config`, `open_config`, `toggle_fullscreen`, `select_all`, `copy_to_clipboard`, `paste_from_clipboard` |
 
 To see exactly what arrived:
 
@@ -233,18 +233,34 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌘K` | Add host… |
 | `⌘R` | Reconnect the selected host |
 | `⌘T` | New tab in the selected space |
+| `⌥⌘T` | New space on the selected host |
 | `⌘W` | Close: the pane, in a split; the tab, when the tab has one pane |
 | `⌥⌘W` | Close tab, split or not (`⇧⌘W` closes the window, and the app) |
 | `⌘D` / `⇧⌘D` | Split the active pane right / down |
-| `⇧⌘←↑↓→` | Move the keyboard to the pane in that direction |
-| `⌘1`…`⌘9` | Tab with that number, in the selected space |
-| `⌃⌘1`…`⌃⌘9` | Space with that number |
-| `⌥⌘←` / `⌥⌘→` | Previous / next tab |
-| `⌥⌘↑` / `⌥⌘↓` | Previous / next space, down the whole sidebar (hosts included) |
+| `⌥⌘←↑↓→` | Move the keyboard to the pane in that direction |
+| `⇧⌘1`…`⇧⌘9` | Space in that row of the sidebar, hosts included — the row shows the key |
+| `⇧⌘←` / `⇧⌘→` | Previous / next tab |
+| `⇧⌘↑` / `⇧⌘↓` | Previous / next space, down the whole sidebar (hosts included) |
 | `⇧⌘U` | Jump to the pane that needs attention (any host) |
 | `⌃⌘S` | Toggle sidebar |
 | `⌃⌘F` | Full screen |
 | `⌘,` / `⇧⌘,` | Open / reload the ghostty config |
+
+Tabs are not numbered — not in the strip, not in a sidebar row's list of them,
+and no key picks one by number. A tab is named after what is running in it, and
+⇧⌘←/→ walk the strip. A space row carries its own key hint (`⇧⌘3`, dim, on the
+right) on the nine rows the key reaches, so a number is only ever drawn where it
+means something; an unread count takes that corner instead, and the key moves
+into the row's tooltip.
+The prefix is the level: `⇧⌘` reaches tabs and spaces, `⌥⌘` reaches the splits
+inside a tab. The nine keys count rows straight down the sidebar rather than
+restarting at each host, so with two hosts attached the fourth row is `⇧⌘4`
+wherever the host boundary falls — which does mean a row's key shifts when a
+host above it attaches or opens a space.
+
+macOS binds `⇧⌘3`…`⇧⌘6` to its own screenshot service and takes them above any
+app, so those four rows answer only once Screenshots is cleared in System
+Settings → Keyboard → Keyboard Shortcuts.
 
 `⌘,` is ghostty's own `open_config` binding, and this app honours it. Settings —
 the app's own window, with the notification switch — is in the Herdglass menu,

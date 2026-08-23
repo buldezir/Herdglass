@@ -66,8 +66,11 @@ public struct SessionSnapshot: Codable, Sendable {
     /// The `workspaces` array is the server's to order and nothing says the next
     /// process gets the same one, so the sidebar reshuffled between launches
     /// while the numbers on the rows stayed put. `number` is Herdr's own stable
-    /// ordinal — it is what the row already shows and what ⌃⌘1…⌃⌘9 name — so it
-    /// is the only order the sidebar can use without disagreeing with itself.
+    /// ordinal, the one thing about a space that does not move between two
+    /// processes, so it is the only order the sidebar can use without
+    /// disagreeing with itself. It is the sort key and nothing more: the rows
+    /// are *named* by position, which is what ⇧⌘1…⇧⌘9 count
+    /// (`spacePositionIgnoresTheGapsInHerdrsNumbering`).
     /// The id breaks a tie because `sorted` is not a stable sort, and a tie that
     /// resolves differently on each poll is the same shuffle one snapshot later.
     public var orderedWorkspaces: [WorkspaceInfo] {
@@ -141,9 +144,10 @@ public struct SessionSnapshot: Codable, Sendable {
     ///
     /// **Not** `TabInfo.number`, which is a stable ordinal with gaps: close the
     /// first of three tabs and the survivors read 3 and 4, while their labels
-    /// renumber to 1 and 2. Position is what the strip shows, what ⌘1…⌘9 mean,
-    /// and what Herdr puts in the label of a tab nobody has named — so it is
-    /// also the only thing `title(ofTab:)` can compare a label against.
+    /// renumber to 1 and 2. Nothing draws this and no key selects by it any
+    /// more; it survives because position is what Herdr puts in the label of a
+    /// tab nobody has named, so it is the only thing `title(ofTab:)` can
+    /// compare a label against.
     public func position(ofTab tab: TabInfo) -> Int {
         let ordered = tabs(in: tab.workspaceId)
         guard let index = ordered.firstIndex(where: { $0.tabId == tab.tabId }) else {
@@ -160,18 +164,22 @@ public struct SessionSnapshot: Codable, Sendable {
         return paneTitle(pane)
     }
 
-    /// Every tab in a space, shortest useful form, in strip order: the position
-    /// the user would press and what is running there.
+    /// Every tab in a space, shortest useful form, in strip order: what is
+    /// running in each.
     ///
     /// A space name can only ever be one thing, and a space is usually several —
     /// this is what makes a sidebar row say where its work actually is.
+    ///
+    /// No positions in front of the names. The strip does not number its tabs
+    /// and no key selects one by number, so a digit here would be counting for
+    /// its own sake — and it is the leading characters of a line that is already
+    /// truncating. A tab with nothing to be named after is dropped rather than
+    /// printed as the bare position its label falls back to; if that empties the
+    /// list, the caller says where the space is instead.
     public func tabSummaries(inWorkspace workspaceId: String) -> [String] {
-        tabs(in: workspaceId).enumerated().map { index, tab in
-            let position = "\(index + 1)"
+        tabs(in: workspaceId).enumerated().compactMap { index, tab in
             let name = title(ofTab: tab)
-            // An unnamed tab with nothing to be named after falls back to its
-            // own label, which *is* the position — do not print it twice.
-            return name.isEmpty || name == position ? position : "\(position) \(name)"
+            return name.isEmpty || name == "\(index + 1)" ? nil : name
         }
     }
 

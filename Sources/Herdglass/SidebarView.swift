@@ -23,6 +23,14 @@ struct SidebarModel {
         var offline: Bool = false
         var busy: Bool = false
         var symbol: String?
+        /// The key that selects this row, already rendered (`⇧⌘3`). Nil on
+        /// every row no key reaches — a host row, and any space past the ninth
+        /// counting down the whole sidebar — because a number drawn where
+        /// nothing answers it is what made the old prefixes noise. A row's key
+        /// therefore moves when a host above it attaches or gains a space: it
+        /// names where the row *is*, which is the only thing a nine-key set
+        /// spread over every host can honestly name.
+        var shortcut: String?
     }
 
     var hosts: [Row] = []
@@ -384,6 +392,7 @@ private final class SidebarCell: NSTableCellView {
     private let spinner = NSProgressIndicator()
     private let titleLabel = NSTextField(labelWithString: "")
     private let subtitleLabel = NSTextField(labelWithString: "")
+    private let hint = NSTextField(labelWithString: "")
     private let badge = BadgeView()
     /// The metrics that move with the base font size, kept so a change can be
     /// applied to a cell the outline view is recycling rather than rebuilding.
@@ -407,6 +416,12 @@ private final class SidebarCell: NSTableCellView {
         subtitleLabel.lineBreakMode = .byTruncatingTail
         subtitleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // Dim and to the right: the row's job is to say where the work is, and
+        // a shortcut you already know is the first thing that should stop
+        // competing with the name for the eye.
+        hint.textColor = .tertiaryLabelColor
+        hint.alignment = .right
+
         icon.contentTintColor = .secondaryLabelColor
 
         spinner.style = .spinning
@@ -418,7 +433,7 @@ private final class SidebarCell: NSTableCellView {
         text.alignment = .leading
         text.spacing = 1
 
-        let row = NSStackView(views: [dot, icon, spinner, text, badge])
+        let row = NSStackView(views: [dot, icon, spinner, text, hint, badge])
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
@@ -447,6 +462,7 @@ private final class SidebarCell: NSTableCellView {
     func applyChromeMetrics() {
         titleLabel.font = ChromeMetrics.font(12, weight: unread ? .semibold : .medium)
         subtitleLabel.font = ChromeMetrics.font(10)
+        hint.font = ChromeMetrics.font(10, weight: .medium)
         icon.symbolConfiguration = ChromeMetrics.symbol(11)
         for constraint in dotSize { constraint.constant = ChromeMetrics.length(10) }
         iconWidth?.constant = ChromeMetrics.length(14)
@@ -485,7 +501,17 @@ private final class SidebarCell: NSTableCellView {
 
         if !isHost { dot.update(status: row.status, unread: row.unread) }
         badge.count = row.badge
-        toolTip = row.subtitle.isEmpty ? row.title : "\(row.title)\n\(row.subtitle)"
+
+        // The hint and the badge share the trailing edge, and the badge wins:
+        // a count is news, a shortcut is the same every time you look at it.
+        // The tooltip carries the key either way, so it is still there to be
+        // found on the one row that is busy enough to hide it.
+        hint.stringValue = row.shortcut ?? ""
+        hint.isHidden = row.shortcut == nil || row.badge > 0
+
+        toolTip = [row.title, row.subtitle.isEmpty ? nil : row.subtitle, row.shortcut]
+            .compactMap { $0 }
+            .joined(separator: "\n")
     }
 }
 
