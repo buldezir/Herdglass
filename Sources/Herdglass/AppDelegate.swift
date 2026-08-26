@@ -268,6 +268,16 @@ enum MainMenu {
         previousTab.keyEquivalentModifierMask = [.command, .option]
         previousTab.ghostty(.previousTab)
         menu.addItem(.separator())
+        // ⌘`, the key macOS gives to cycling an app's windows — which this app,
+        // having exactly one, has nothing else to spend it on. The item is here
+        // for the pointer and to say the key out loud; the key itself is the
+        // window's own monitor, because holding it open, stepping through and
+        // committing on release is a gesture and a key equivalent is a press.
+        menu.addItem(
+            withTitle: "Switch Space…",
+            action: #selector(MainWindowController.showSpaceSwitcher(_:)),
+            keyEquivalent: "`"
+        )
         // Spaces are Herdr's own, so ghostty has no action to rebind these to,
         // and they cross hosts: the walk is the sidebar, top to bottom.
         let nextSpace = menu.addItem(

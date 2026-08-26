@@ -14,9 +14,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let splitController = SidebarSplitViewController()
     /// Behind-window blur for `background-blur`; hidden unless the config asks.
     private let blur = NSVisualEffectView()
+    /// The spaces of every attached host, over the terminal, while ⌘` or a held
+    /// ⌥⌘ asks for them.
+    private let switcher = SpaceSwitcher()
     private var splitItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
-    private var spaceKeyMonitor: Any?
+    private var keyMonitor: Any?
+    private var flagsMonitor: Any?
 
     /// `restoringHosts` belongs to a launch with nothing named on the command
     /// line: `--connect somewhere` asked for one host, and dialling the
@@ -34,6 +38,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         wireSidebar()
         wireTabBar()
         wireContent()
+        wireSwitcher()
 
         window.delegate = self
         window.title = "Herdglass"
@@ -75,7 +80,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             name: SpaceKeys.didChangeNotification,
             object: nil
         )
-        installSpaceKeyMonitor()
+        installKeyMonitors()
         refresh()
 
         DispatchQueue.main.async { [weak self] in
@@ -126,6 +131,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         tabBar.onNew = { [weak self] in self?.newTab(nil) }
     }
 
+    private func wireSwitcher() {
+        // Asked at the moment the overlay opens, and not again: the list is the
+        // gesture's, frozen for as long as it lasts.
+        switcher.spaces = { [weak self] in self?.switcherItems() ?? [] }
+        switcher.onCommit = { [weak self] item in
+            self?.selectSpace((host: item.hostId, space: item.spaceId))
+        }
+    }
+
     private func wireContent() {
         content.onActivatePane = { [weak self] paneId in
             guard let session = self?.connections.selectedSession else { return }
@@ -161,14 +175,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return splitController
     }
 
-    /// Tab strip on top, the tab's panes underneath.
+    /// Tab strip on top, the tab's panes underneath, and the space switcher over
+    /// both when a held key asks for it.
     private func buildTerminalArea() -> NSView {
         let container = NSView()
         blur.blendingMode = .behindWindow
         blur.material = .underWindowBackground
         blur.state = .active
         blur.isHidden = true
-        for view in [blur, tabBar, content] as [NSView] {
+        for view in [blur, tabBar, content, switcher.view] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -192,6 +207,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             content.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
             content.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+        ])
+        // The safe area, like the strip and the panes: the overlay dims what it
+        // is a shortcut through, and the titlebar is not part of that.
+        NSLayoutConstraint.activate([
+            switcher.view.topAnchor.constraint(equalTo: guide.topAnchor),
+            switcher.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
+            switcher.view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            switcher.view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
         ])
         return container
     }
@@ -299,12 +322,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Keyboard
 
-    /// Picking a space by its row in the sidebar. A menu item cannot express it
-    /// (the set changes with every snapshot), so it is a monitor — scoped to
-    /// this window, and torn down with it, so a closed window can never swallow
-    /// another window's keystrokes.
+    /// The keyboard this window answers on its own, rather than through a menu
+    /// item: picking a space by its row in the sidebar, and the space switcher.
+    /// Neither can be a menu item — the set of spaces changes with every
+    /// snapshot, and a gesture that begins on a key press and ends when a
+    /// modifier comes up is not something a key equivalent can express — so both
+    /// are monitors, scoped to this window and torn down with it, and a closed
+    /// window can never swallow another window's keystrokes.
     ///
-    /// ⌥⌘1…⌥⌘9, off until Settings turns them on (`SpaceKeys`), which the
+    /// ⌥⌘1…⌥⌘9 are off until Settings turns them on (`SpaceKeys`), which the
     /// monitor asks per keystroke rather than by installing and removing itself:
     /// there is then one answer to "is this key mine" and no window that missed
     /// the toggle.
@@ -313,31 +339,98 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// `goto_tab` binds, and it went when the numbers did: a strip that does not
     /// number its tabs cannot tell you which one ⌘4 is, and counting them by eye
     /// to reach the fourth is slower than clicking it. ⌥⌘←/→ still walk them.
-    private func installSpaceKeyMonitor() {
-        spaceKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+    private func installKeyMonitors() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
-            // `.numericPad` rides along on the keypad digits, `.function` on
-            // anything above the row of numbers, and caps lock is never part of
-            // a shortcut.
-            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-            // Out before doing any work on an ordinary keystroke: this monitor
-            // sees everything the user types into a terminal.
-            guard modifiers == SpaceKeys.modifiers, SpaceKeys.isEnabled else { return event }
-            // Unshifted, so the digit is the digit whatever else is held down.
-            guard
-                let characters = (event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers),
-                let position = Int(characters), SpaceKeys.positions.contains(position)
-            else { return event }
-            // Rows, counted down the whole sidebar — not `WorkspaceInfo.number`,
-            // which is a stable ordinal with gaps, and no longer one host's
-            // folder either. Nine keys spread over every attached host reach
-            // nine different spaces; nine keys per host reached one host's and
-            // left the rest of the sidebar unaddressable without selecting it
-            // first, which is the thing the key was supposed to save.
-            guard let target = self.orderedSpaces.dropFirst(position - 1).first else { return event }
-            self.selectSpace(target)
-            return nil
+            return self.handle(keyDown: event) ? nil : event
         }
+        // The modifiers are half of this gesture: the hold that opens the
+        // overlay, and the release that commits it. Never swallowed — every
+        // other modifier in the app rides on the same events.
+        flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            guard let self, self.window?.isKeyWindow == true, self.window?.attachedSheet == nil else { return event }
+            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            self.switcher.modifiersChanged(to: modifiers)
+            return event
+        }
+    }
+
+    /// True when the keystroke was this window's and the pane below must not see
+    /// it. Runs on everything the user types into a terminal, so it gets out of
+    /// the way early.
+    private func handle(keyDown event: NSEvent) -> Bool {
+        // `.numericPad` rides along on the keypad digits, `.function` on
+        // anything above the row of numbers, and caps lock is never part of
+        // a shortcut.
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        // A keystroke means the ⌥⌘ that is down is the front of a chord — ⌥⌘T,
+        // ⌥⌘W, ⌥⌘arrows — and not a hand resting on the prefix to see the list.
+        switcher.cancelHold()
+        if switcher.isOpen { return handle(switcherKey: Self.unshifted(event), modifiers: modifiers) }
+        // Everything below is a ⌘ chord, and asking that first is what keeps the
+        // rest of this — a key translation per keystroke — off the path an
+        // ordinary character takes into the terminal.
+        guard modifiers.contains(.command), !modifiers.contains(.control) else { return false }
+        let key = Self.unshifted(event)
+        // ⌘`, and ⇧⌘` back the other way: ⌘⇥'s own shape, on the key macOS gives
+        // to cycling an app's windows — which this app, having exactly one,
+        // has nothing to spend it on.
+        if key == "`" {
+            switcher.open(advancing: modifiers.contains(.shift) ? -1 : 1, commitsOnRelease: true)
+            return true
+        }
+        guard modifiers == SpaceKeys.modifiers, SpaceKeys.isEnabled else { return false }
+        guard let position = Int(key), SpaceKeys.positions.contains(position) else { return false }
+        // Rows, counted down the whole sidebar — not `WorkspaceInfo.number`,
+        // which is a stable ordinal with gaps, and no longer one host's
+        // folder either. Nine keys spread over every attached host reach
+        // nine different spaces; nine keys per host reached one host's and
+        // left the rest of the sidebar unaddressable without selecting it
+        // first, which is the thing the key was supposed to save.
+        guard let target = orderedSpaces.dropFirst(position - 1).first else { return false }
+        selectSpace(target)
+        return true
+    }
+
+    /// The key as if nothing were held down, so a digit is the digit and the
+    /// grave key is the grave key whatever the chord around it.
+    private static func unshifted(_ event: NSEvent) -> String {
+        event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers ?? ""
+    }
+
+    /// The keys that belong to the overlay while it is up. Every arrow steps
+    /// along the one list it is showing, ⌥⌘←/→ and ⌥⌘↑/↓ alike: the tiles are
+    /// the sidebar's spaces wrapped onto rows, so "next" is the next tile
+    /// whichever way the hand reaches for it, and nothing may reach past the
+    /// overlay to switch a tab behind it.
+    ///
+    /// Anything else is not the switcher's. It takes the overlay down and lets
+    /// the keystroke through rather than swallowing it, so a gesture can never
+    /// leave the window holding keys the user is trying to type.
+    private func handle(switcherKey key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+        switch key {
+        case "`":
+            switcher.move(by: modifiers.contains(.shift) ? -1 : 1)
+        case "\u{F703}", "\u{F701}":
+            switcher.move(by: 1)
+        case "\u{F702}", "\u{F700}":
+            switcher.move(by: -1)
+        case "\u{1B}":
+            switcher.cancel()
+        case "\r", "\u{3}":
+            switcher.commit()
+        default:
+            // The digits jump straight to a tile, and inside the overlay they do
+            // it whether or not Settings turned ⌥⌘1…⌥⌘9 on: the tile is drawing
+            // the number, and the chord is one nothing else can be using while
+            // an overlay is up.
+            guard let position = Int(key), SpaceKeys.positions.contains(position) else {
+                switcher.cancel()
+                return false
+            }
+            switcher.jump(to: position)
+        }
+        return true
     }
 
     /// Every user-initiated selection goes through here, so picking a pane also
@@ -444,12 +537,29 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func selectPreviousTab() { step(tabsBy: -1) }
 
     private func step(tabsBy offset: Int) {
+        // The overlay is walking spaces, and it took every arrow while it is up.
+        // Belt and braces with the monitor that swallows them: a menu item that
+        // reaches its action anyway must still not switch a tab behind the card.
+        guard !switcher.isOpen else {
+            switcher.move(by: offset)
+            return
+        }
         guard let session = connections.selectedSession else { return }
         let tabs = session.tabsInSelectedSpace
         guard !tabs.isEmpty, let current = tabs.firstIndex(where: { $0.tabId == session.selectedTabId })
         else { return }
         let next = tabs[(current + offset + tabs.count) % tabs.count]
         select(focusTerminal: true) { $0.selectTab(next.tabId) }
+    }
+
+    /// The menu's way in. The key itself is the monitor's — a gesture the menu
+    /// cannot express — so this normally runs from a click, with nothing held to
+    /// let go of: the overlay then waits for ↩, ⎋ or a click rather than for a
+    /// modifier. If ⌘ *is* down, the keystroke reached the menu instead of the
+    /// monitor and it behaves as ⌘` should.
+    @objc func showSpaceSwitcher(_ sender: Any?) {
+        let held = NSEvent.modifierFlags.contains(.command)
+        switcher.open(advancing: held ? 1 : 0, commitsOnRelease: held)
     }
 
     @objc func selectNextSpace() { step(spacesBy: 1) }
@@ -481,6 +591,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// one host steps into the first space of the next and the host selection
     /// follows.
     private func step(spacesBy offset: Int) {
+        // While the overlay is up these move the highlight and nothing else:
+        // deferring the landing until the modifier comes up is the whole point
+        // of it.
+        guard !switcher.isOpen else {
+            switcher.move(by: offset)
+            return
+        }
         let spaces = orderedSpaces
         guard !spaces.isEmpty else { return }
         // With nothing selected yet, step in from the end the user is coming
@@ -589,7 +706,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return session?.selectedPaneId != nil
         case #selector(selectNextTab), #selector(selectPreviousTab):
             return (session?.tabsInSelectedSpace.count ?? 0) > 1
-        case #selector(selectNextSpace), #selector(selectPreviousSpace):
+        case #selector(selectNextSpace), #selector(selectPreviousSpace), #selector(showSpaceSwitcher(_:)):
             return connections.connections.reduce(0) { $0 + $1.session.spaces.count } > 1
         default:
             return true
@@ -601,15 +718,26 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: GhosttyRuntime.configDidChangeNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: SpaceKeys.didChangeNotification, object: nil)
-        if let spaceKeyMonitor {
-            NSEvent.removeMonitor(spaceKeyMonitor)
-            self.spaceKeyMonitor = nil
+        for monitor in [keyMonitor, flagsMonitor].compactMap({ $0 }) {
+            NSEvent.removeMonitor(monitor)
         }
+        keyMonitor = nil
+        flagsMonitor = nil
+        switcher.cancel()
         // Tear the SSH masters, event threads and bridges down now rather than
         // waiting for ControlPersist to expire.
         content.teardown()
         connections.disconnectAll()
         onClose?(self)
+    }
+
+    /// A gesture that ends outside this window ends. Letting go of ⌘ somewhere
+    /// else — ⌘⇥ away mid-hold — is a `flagsChanged` this window never sees, and
+    /// the overlay would otherwise still be up when the user came back to a
+    /// keyboard that had moved on.
+    func windowDidResignKey(_ notification: Notification) {
+        switcher.cancelHold()
+        switcher.cancel()
     }
 
     // MARK: - ConnectionsControllerDelegate
@@ -826,6 +954,38 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // Nothing to list: say so rather than leaving the row half empty.
         if let cwd = space.tokens?["cwd"], !cwd.isEmpty { return cwd.abbreviatingHome }
         return "No tabs"
+    }
+
+    // MARK: - Space switcher model
+
+    /// The switcher's tiles: `orderedSpaces` again, which is what makes the
+    /// overlay's order, the sidebar's order and the order ⌥⌘↑/↓ walk the same
+    /// order by construction rather than by three rules agreeing. A space that
+    /// has gone between the walk and the lookup is simply not a tile.
+    private func switcherItems() -> [SpaceSwitcherModel.Item] {
+        let selectedSpace = connections.selectedSession?.selectedSpace?.workspaceId
+        return orderedSpaces.enumerated().compactMap { index, target in
+            guard
+                let connection = connections.connection(id: target.host),
+                let space = connection.session.spaces.first(where: { $0.workspaceId == target.space })
+            else { return nil }
+            let session = connection.session
+            let unread = session.unreadCount(inSpace: space.workspaceId)
+            return SpaceSwitcherModel.Item(
+                hostId: connection.id,
+                spaceId: space.workspaceId,
+                hostName: connection.target.displayName,
+                symbol: connection.target.isLocal ? "desktopcomputer" : "server.rack",
+                title: session.title(ofSpace: space),
+                subtitle: spaceSubtitle(space, session: session),
+                status: session.effectiveStatus(ofSpace: space),
+                unread: unread > 0,
+                badge: unread,
+                digit: SpaceKeys.positions.contains(index + 1) ? "\(index + 1)" : nil,
+                current: connection.id == connections.selectedConnectionId
+                    && space.workspaceId == selectedSpace
+            )
+        }
     }
 
     // MARK: - Tab bar model

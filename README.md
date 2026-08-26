@@ -244,6 +244,8 @@ Defaults, and all of them movable with `keybind` (see above).
 | `⌘D` / `⇧⌘D` | Split the active pane right / down |
 | `⇧⌘←↑↓→` | Move the keyboard to the pane in that direction |
 | `⌥⌘1`…`⌥⌘9` | Space in that row of the sidebar, hosts included — off until Settings turns it on |
+| ``⌘` `` / ``⇧⌘` `` | Step forward / back through the spaces overlay, landing when you let go of `⌘` |
+| `⌥⌘` held | The same overlay, after two seconds, on the space you are already in |
 | `⌥⌘←` / `⌥⌘→` | Previous / next tab |
 | `⌥⌘↑` / `⌥⌘↓` | Previous / next space, down the whole sidebar (hosts included) |
 | `⇧⌘U` | Jump to the pane that needs attention (any host) |
@@ -277,6 +279,28 @@ lose, because `pane.close` and `tab.close` really do close panes on the server �
 `confirm-close-surface` in your ghostty config changes that to never or always.
 
 Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becomes a `terminal.scroll` on the server, which then sends the frame for the new viewport.
+
+## The spaces overlay
+
+``⌘` `` puts every attached host's spaces up as a grid of tiles over the terminal
+and steps to the next one, the way `⌘⇥` steps through apps: keep `⌘` down and
+press `` ` `` again to keep going, `⇧` to go back, an arrow — any of the four —
+to move a tile, or a digit to jump to one of the first nine. Nothing switches
+until you let go of `⌘`; `⎋` leaves it where it was, and clicking a tile takes
+it. Holding `⌥⌘` on its own for two seconds opens the same overlay without
+stepping anywhere, which is the version to reach for when the question is "what
+is running where" rather than "next". Any keystroke cancels that hold, so the
+`⌥⌘` chords are untouched.
+
+It exists because `⌥⌘↑`/`⌥⌘↓` and `⌥⌘1`…`⌥⌘9` both *land*: the host selection
+moves, the panes you left are parked and the keyboard goes with them, so walking
+six spaces to find one switches six times to arrive once. The overlay is the same
+walk with the landing held back until the key comes up — and the only one of the
+three that shows you the list. Each tile names the host above the space, carries
+the space's status dot and unread count, and the line under the grid says what is
+running in the space the highlight is on. ``⌘` `` is macOS's key for cycling an
+app's windows, which this app, having exactly one, has nothing else to spend it
+on; the overlay is also in **Terminal → Switch Space…** for the pointer.
 
 ## Command line
 
