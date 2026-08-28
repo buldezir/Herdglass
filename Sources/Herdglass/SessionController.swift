@@ -59,6 +59,16 @@ final class SessionController {
     /// later, is exactly what reads as a reconnect.
     private var layoutTrees: [String: (key: String, tree: LayoutTree)] = [:]
 
+    /// Which pane of each tab this client was last in, so leaving a split and
+    /// coming back lands where the user left off rather than on the first pane.
+    ///
+    /// It has to be ours to remember: Herdr's `focused` flag marks the one pane
+    /// the *server* is focused on, so every tab the user is not currently in
+    /// reports no focused pane at all, and `preferredPane` then fell through to
+    /// `panes.first`. Walking away to another space or tab and back therefore
+    /// snapped a split's keyboard and accent border to the top-left pane.
+    private var lastPaneByTab: [String: String] = [:]
+
     /// Split tree of the selected tab, as long as every pane in it still
     /// exists. A tree whose signature has moved on is still worth drawing while
     /// the refetch is in flight — the alternative is a single-pane guess and a
@@ -309,10 +319,13 @@ final class SessionController {
             ?? tabs.first
     }
 
-    /// Where picking a tab lands, on the same principle.
+    /// Where picking a tab lands, on the same principle — with the pane this
+    /// client was last in ahead of the server's focus, so returning to a split
+    /// returns to the pane the user was working in.
     private func preferredPane(in tabId: String, snapshot: SessionSnapshot) -> PaneInfo? {
         let panes = snapshot.panes(in: tabId)
         return panes.first { unreadPaneIds.contains($0.paneId) }
+            ?? lastPaneByTab[tabId].flatMap { id in panes.first { $0.paneId == id } }
             ?? panes.first { $0.focused }
             ?? panes.first
     }
@@ -349,6 +362,7 @@ final class SessionController {
         selectedTabId = pane.tabId
         selectedWorkspaceId = pane.workspaceId
         selectedPaneId = paneId
+        lastPaneByTab[pane.tabId] = paneId
         markVisiblePanesRead()
         focusRemotePane(paneId)
         rememberSelection()
@@ -743,6 +757,7 @@ final class SessionController {
         let liveTabs = Set(snapshot.tabs.map(\.tabId))
         layoutTrees = layoutTrees.filter { liveTabs.contains($0.key) }
         layoutPrefetches = layoutPrefetches.filter { liveTabs.contains($0.key) }
+        lastPaneByTab = lastPaneByTab.filter { liveTabs.contains($0.key) }
 
         applyPendingTabSelection()
         applyPendingPaneSelection()
@@ -793,9 +808,11 @@ final class SessionController {
         }
         if selectedPaneId == nil {
             let remembered = restoring?.paneId.flatMap { id in panes.first { $0.paneId == id } }
+            let lastHere = lastPaneByTab[tabId].flatMap { id in panes.first { $0.paneId == id } }
             let focused = snapshot.focusedPaneId.flatMap { id in panes.first { $0.paneId == id } }
-            selectedPaneId = (remembered ?? focused ?? panes.first { $0.focused } ?? panes.first)?.paneId
+            selectedPaneId = (remembered ?? lastHere ?? focused ?? panes.first { $0.focused } ?? panes.first)?.paneId
         }
+        if let selectedPaneId { lastPaneByTab[tabId] = selectedPaneId }
 
         // Landing somewhere the server is not already looking is this client
         // making a choice, exactly as a click is, so the server has to hear about
