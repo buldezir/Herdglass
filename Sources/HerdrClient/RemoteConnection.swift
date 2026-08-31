@@ -101,7 +101,7 @@ public final class RemoteConnection: @unchecked Sendable {
             arguments: sessionArgs + ["status", "server"],
             extraEnv: [:]
         )
-        if status.terminationStatus == 0, status.stdout.contains("running") { return }
+        if HerdrStatus.isRunning(from: status.stdout) { return }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: herdrBinary)
@@ -157,6 +157,18 @@ public final class RemoteConnection: @unchecked Sendable {
         return socket
     }
 
+    /// Find herdr, make sure a server is *running*, and print its status.
+    ///
+    /// "Running" is the `status:` line and nothing else — see
+    /// `HerdrStatus.isRunning`. A server that crashed leaves its socket file
+    /// behind and `herdr status server` still exits 0, so the old exit-code test
+    /// meant a crashed host never got its server restarted and every reconnect
+    /// went on forwarding a dead socket: the only way back was `herdr --remote`.
+    /// The script waits for the server it started and fails loudly with the log
+    /// if it never comes up, rather than handing back a socket path that will
+    /// only fail at the first request. The log is per-uid because `/tmp` on a
+    /// remote box is shared: a path another user owns is a redirect that fails,
+    /// so the server never starts and the log we quote belongs to someone else.
     static func remoteBootstrapScript(session: String?) -> String {
         let sessionArgs = session.map { "--session " + $0.shellEscaped } ?? ""
         let candidates = HerdrPaths.binaryCandidates
@@ -177,9 +189,23 @@ public final class RemoteConnection: @unchecked Sendable {
           echo "herdr not found (checked Homebrew, mise, Nix, ~/.local/bin)" >&2
           exit 1
         fi
-        if ! "$HERDR" \(sessionArgs) status server >/dev/null 2>&1; then
-          nohup "$HERDR" \(sessionArgs) server >/tmp/herdglass-server.log 2>&1 &
-          sleep 0.8
+        running() {
+          "$HERDR" \(sessionArgs) status server 2>/dev/null \\
+            | grep -qE '^[[:space:]]*status:[[:space:]]*running[[:space:]]*$'
+        }
+        LOG="/tmp/herdglass-server-$(id -u).log"
+        if ! running; then
+          nohup "$HERDR" \(sessionArgs) server >"$LOG" 2>&1 &
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 0.4
+            if running; then break; fi
+          done
+        fi
+        if ! running; then
+          echo "herdr server would not start:" >&2
+          "$HERDR" \(sessionArgs) status server >&2 || true
+          tail -n 20 "$LOG" >&2 2>/dev/null || true
+          exit 1
         fi
         "$HERDR" \(sessionArgs) status server
         """
@@ -258,6 +284,24 @@ public final class RemoteConnection: @unchecked Sendable {
 }
 
 public enum HerdrStatus {
+    /// Whether `herdr status server` reports a live server.
+    ///
+    /// It has to be the value of the `status:` line, exactly: `herdr status
+    /// server` exits **0** whether the server is running or not — a crashed
+    /// server still prints `status: not running` and a socket path, because the
+    /// socket file it left behind is still there. Testing the exit code says
+    /// "running" forever after a crash, and so does a `contains("running")`,
+    /// which "not running" satisfies too. Either way nothing restarts the
+    /// server and every reconnect forwards a dead socket.
+    public static func isRunning(from status: String) -> Bool {
+        for line in status.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("status:") else { continue }
+            return trimmed.dropFirst("status:".count).trimmingCharacters(in: .whitespaces) == "running"
+        }
+        return false
+    }
+
     public static func socketPath(from status: String) -> String? {
         for line in status.split(whereSeparator: \.isNewline) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)

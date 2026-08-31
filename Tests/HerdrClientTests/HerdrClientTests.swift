@@ -631,6 +631,28 @@ private let splitTreeJSON = """
     #expect(HerdrStatus.socketPath(from: "status: not running") == nil)
 }
 
+@Test func serverIsRunningOnlyWhenTheStatusLineSaysSo() {
+    let running = """
+    status: running
+    version: 0.8.2
+    socket: /Users/sasha/.config/herdr/herdr.sock
+    """
+    #expect(HerdrStatus.isRunning(from: running))
+}
+
+/// A crashed server leaves its socket file behind, and `herdr status server`
+/// still exits 0 while reporting it — so "not running" must not read as running
+/// (it contains the word) and the socket path must not be taken as proof.
+@Test func crashedServerDoesNotReadAsRunning() {
+    let crashed = """
+    status: not running
+    socket: /Users/sasha/.config/herdr/herdr.sock
+    """
+    #expect(HerdrStatus.isRunning(from: crashed) == false)
+    #expect(HerdrStatus.isRunning(from: "") == false)
+    #expect(HerdrStatus.isRunning(from: "socket: /tmp/herdr.sock") == false)
+}
+
 @Test func clientSocketSitsBesideAPISocket() {
     #expect(HerdrStatus.clientSocketPath(from: "/tmp/herdr.sock") == "/tmp/herdr-client.sock")
     #expect(HerdrStatus.clientSocketPath(from: "/tmp/herdr") == "/tmp/herdr-client.sock")
