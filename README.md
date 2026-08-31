@@ -284,8 +284,9 @@ Scrolling the pane scrolls Herdr's scrollback, not a local copy: the wheel becom
 
 ``⌘` `` puts every attached host's spaces up as a grid of tiles over the terminal
 and steps to the next one, the way `⌘⇥` steps through apps: keep `⌘` down and
-press `` ` `` again to keep going, `⇧` to go back, an arrow — any of the four —
-to move a tile, or a digit to jump to one of the first nine. Nothing switches
+press `` ` `` again to keep going, `⇧` to go back, `←`/`→` to move a tile,
+`↑`/`↓` to move a whole row of the grid, or a digit to jump to one of the first
+nine. Nothing switches
 until you let go of `⌘`; `⎋` leaves it where it was, and clicking a tile takes
 it. Holding `⌥⌘` on its own for two seconds opens the same overlay without
 stepping anywhere, which is the version to reach for when the question is "what

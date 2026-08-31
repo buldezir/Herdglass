@@ -366,7 +366,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // A keystroke means the ⌥⌘ that is down is the front of a chord — ⌥⌘T,
         // ⌥⌘W, ⌥⌘arrows — and not a hand resting on the prefix to see the list.
         switcher.cancelHold()
-        if switcher.isOpen { return handle(switcherKey: Self.unshifted(event), modifiers: modifiers) }
+        if switcher.isOpen { return handle(switcherKey: event, modifiers: modifiers) }
         // Everything below is a ⌘ chord, and asking that first is what keeps the
         // rest of this — a key translation per keystroke — off the path an
         // ordinary character takes into the terminal.
@@ -394,27 +394,56 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// The key as if nothing were held down, so a digit is the digit and the
     /// grave key is the grave key whatever the chord around it.
+    ///
+    /// Printable keys only. Ask it for an arrow and it answers with the ASCII
+    /// cursor control the layout maps that key to — U+001C…U+001F — and not
+    /// with the `NSUpArrowFunctionKey` spelling the rest of the app writes
+    /// arrows in, so arrows are read by key code instead.
     private static func unshifted(_ event: NSEvent) -> String {
         event.characters(byApplyingModifiers: []) ?? event.charactersIgnoringModifiers ?? ""
     }
 
-    /// The keys that belong to the overlay while it is up. Every arrow steps
-    /// along the one list it is showing, ⌥⌘←/→ and ⌥⌘↑/↓ alike: the tiles are
-    /// the sidebar's spaces wrapped onto rows, so "next" is the next tile
-    /// whichever way the hand reaches for it, and nothing may reach past the
-    /// overlay to switch a tab behind it.
+    /// The arrows, by key code: the four physical keys are the same four
+    /// numbers on every layout, which is more than can be said for anything
+    /// they type.
+    private enum ArrowKey: UInt16 {
+        case left = 123, right = 124, down = 125, up = 126
+    }
+
+    /// The keys that belong to the overlay while it is up, ⌥⌘←/→ and ⌥⌘↑/↓
+    /// included: nothing may reach past the card to switch a tab behind it.
+    ///
+    /// The arrows move over the grid that is on the screen — ←/→ one tile,
+    /// ↑/↓ a whole row — rather than along the list underneath it. Both are the
+    /// sidebar's spaces; only one of them is what the eye is following, and a ↓
+    /// that stepped one tile moved the highlight sideways.
+    ///
+    /// The arrows come off `keyCode` because the characters never matched: this
+    /// compared `unshifted`, which is what the *layout* types, against the
+    /// `NSUpArrowFunctionKey` spelling, which is what `charactersIgnoringModifiers`
+    /// and a menu's key equivalent use. Nothing ever equalled anything, so every
+    /// arrow fell to `default` and took the overlay down — the one gesture that
+    /// is nothing but stepping along a list was closed by the keys that step.
+    /// Only ⌥⌘←/→ and ⌥⌘↑/↓ kept working, and only because they arrive as
+    /// menu items whose actions check `isOpen` for themselves.
     ///
     /// Anything else is not the switcher's. It takes the overlay down and lets
     /// the keystroke through rather than swallowing it, so a gesture can never
     /// leave the window holding keys the user is trying to type.
-    private func handle(switcherKey key: String, modifiers: NSEvent.ModifierFlags) -> Bool {
+    private func handle(switcherKey event: NSEvent, modifiers: NSEvent.ModifierFlags) -> Bool {
+        if let arrow = ArrowKey(rawValue: event.keyCode) {
+            switch arrow {
+            case .right: switcher.move(by: 1)
+            case .left: switcher.move(by: -1)
+            case .down: switcher.move(rowsBy: 1)
+            case .up: switcher.move(rowsBy: -1)
+            }
+            return true
+        }
+        let key = Self.unshifted(event)
         switch key {
         case "`":
             switcher.move(by: modifiers.contains(.shift) ? -1 : 1)
-        case "\u{F703}", "\u{F701}":
-            switcher.move(by: 1)
-        case "\u{F702}", "\u{F700}":
-            switcher.move(by: -1)
         case "\u{1B}":
             switcher.cancel()
         case "\r", "\u{3}":
@@ -593,9 +622,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func step(spacesBy offset: Int) {
         // While the overlay is up these move the highlight and nothing else:
         // deferring the landing until the modifier comes up is the whole point
-        // of it.
+        // of it. ⌥⌘↑/↓ are the same two keys the monitor reads, so they move
+        // the same row — a menu item that gets the keystroke first must do what
+        // the key does, not something near it.
         guard !switcher.isOpen else {
-            switcher.move(by: offset)
+            switcher.move(rowsBy: offset)
             return
         }
         let spaces = orderedSpaces

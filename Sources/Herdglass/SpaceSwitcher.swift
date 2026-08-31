@@ -108,9 +108,37 @@ final class SpaceSwitcher {
         apply()
     }
 
+    /// ← and →, which step one tile along the list.
     func move(by offset: Int) {
         guard isOpen else { return }
         highlighted = wrap(highlighted + offset)
+        apply()
+    }
+
+    /// ↑ and ↓, which move a whole row of the grid. The tiles wrap onto rows,
+    /// so a ↓ that stepped one tile moved the highlight sideways — answering
+    /// about a list that is only a list in the code.
+    ///
+    /// The column is kept across the move and both ends wrap, so this stays the
+    /// loop the horizontal pair is. Two edges a grid of tiles has that a
+    /// rectangle does not: a short last row cannot hold every column, so a move
+    /// that falls into the gap lands on that row's last tile — and keeps no
+    /// memory of the column it came from, so ↑ after that ↓ comes back up the
+    /// column it is in now rather than the one it left, which is what selecting
+    /// in a grid does everywhere else. The other is a grid one row tall, which
+    /// has no row to move to: ↑/↓ step a tile there rather than going dead, one
+    /// row being the shape most windows are in.
+    func move(rowsBy offset: Int) {
+        guard isOpen, !items.isEmpty else { return }
+        let columns = max(1, view.columns)
+        guard columns < items.count else {
+            move(by: offset)
+            return
+        }
+        let rows = (items.count + columns - 1) / columns
+        let column = highlighted % columns
+        let row = highlighted / columns + offset
+        highlighted = min((row % rows + rows) % rows * columns + column, items.count - 1)
         apply()
     }
 
@@ -230,8 +258,10 @@ final class SpaceSwitcherView: NSView {
     /// Read by the tiles as well, which is why they are not private.
     fileprivate static let tileWidth: CGFloat = 152
     fileprivate static let tileHeight: CGFloat = 74
-    /// A row wide enough to still read as a row. Past this the grid wraps rather
-    /// than stretching the card across the whole window.
+    /// The widest a row may get, however much window there is: past this the
+    /// grid wraps rather than stretching the card across the whole of it. A
+    /// ceiling on the row, not the row itself — `columnsThatFit` narrows the
+    /// rows below it to keep them even.
     private static let maximumColumns = 6
 
     private let scrim = SwitcherScrimView()
@@ -241,8 +271,10 @@ final class SpaceSwitcherView: NSView {
     private let caption = NSTextField(labelWithString: "")
     private var tiles: [SpaceTile] = []
     /// How many tiles the last build put on a row, so `layout` can tell a resize
-    /// that changes the answer from one that does not.
-    private var columns = 0
+    /// that changes the answer from one that does not — and so ↑/↓ know how far
+    /// a row is. The window decides this, not the model: the same spaces are one
+    /// row wide or three depending on the width they were dealt.
+    private(set) var columns = 0
     /// The card's padding, kept because it moves with the base font size.
     private var padding: [NSLayoutConstraint] = []
     private var model = SpaceSwitcherModel()
@@ -358,15 +390,23 @@ final class SpaceSwitcherView: NSView {
         }
     }
 
-    /// How many tiles fit across the window this overlay is over, never more
-    /// than a row's worth and never fewer than one.
+    /// How many tiles go on a row: as few rows as the window allows, and then
+    /// the tiles spread evenly over the rows rather than filling each one to the
+    /// brim before starting the next.
+    ///
+    /// Seven spaces in a window six tiles wide are two rows whichever way they
+    /// are packed, so the choice is only how wide those rows are — and 4 + 3 is
+    /// a shape, where 6 + 1 is a row with an orphan under it. Because the row
+    /// count is what the window's width decided, spreading can only ever make a
+    /// row narrower than the one that already fit.
     private func columnsThatFit(_ count: Int) -> Int {
         guard count > 0 else { return 1 }
         let tile = ChromeMetrics.length(Self.tileWidth)
         let spacing = ChromeMetrics.length(8)
         let available = max(bounds.width - ChromeMetrics.length(80), tile)
-        let fit = Int((available + spacing) / (tile + spacing))
-        return max(1, min(min(count, Self.maximumColumns), fit))
+        let widest = max(1, min(Self.maximumColumns, Int((available + spacing) / (tile + spacing))))
+        let rows = (count + widest - 1) / widest
+        return (count + rows - 1) / rows
     }
 
     private func applyHighlight() {
