@@ -120,6 +120,13 @@ public final class HerdrRPC: @unchecked Sendable {
         _ = try request(method: "pane.close", params: ["pane_id": paneId])
     }
 
+    /// Close a whole space, and everything in it: the tabs and their panes go
+    /// with it. Which space Herdr focuses instead is not answered here — the
+    /// next snapshot says, the way it does for a closed tab or pane.
+    public func closeWorkspace(_ workspaceId: String) throws {
+        _ = try request(method: "workspace.close", params: ["workspace_id": workspaceId])
+    }
+
     @discardableResult
     public func createWorkspace() throws -> WorkspaceInfo {
         let result = try request(method: "workspace.create", params: ["focus": true])

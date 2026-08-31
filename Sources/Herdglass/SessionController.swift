@@ -459,6 +459,15 @@ final class SessionController {
         perform { _ = try rpc.createWorkspace() }
     }
 
+    /// Close a space and everything in it. Like `closeTab`, this moves no
+    /// selection of its own: the space leaves the next snapshot and
+    /// `settleSelection` adopts whatever Herdr focused in its place — including
+    /// when the space closed was the one this client was showing.
+    func closeSpace(_ workspaceId: String) {
+        guard let rpc else { return }
+        perform { try rpc.closeWorkspace(workspaceId) }
+    }
+
     /// A divider the user dragged. Pushed to the server rather than kept locally
     /// so the TUI and any other client see the same layout.
     func setSplitRatio(path: [Bool], ratio: Double) {

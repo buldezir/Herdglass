@@ -121,6 +121,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         sidebar.onNewSpace = { [weak self] id in
             self?.connections.connection(id: id)?.session.newSpace()
         }
+        sidebar.onCloseSpace = { [weak self] rowId in
+            guard let (connectionId, workspaceId) = Self.spaceRow(rowId) else { return }
+            self?.confirmCloseSpace(connectionId, workspaceId)
+        }
     }
 
     private func wireTabBar() {
@@ -703,6 +707,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         alert.beginSheetModal(for: window) { response in
             guard response == .alertFirstButtonReturn else { return }
             session.closePane(paneId)
+        }
+    }
+
+    /// Closing a space closes every tab and pane in it on the server, so it asks
+    /// under the same ghostty setting a tab does — and counts the same things,
+    /// because "trivial" has to mean the same thing two rows apart. The space
+    /// need not be the selected one, or even on the selected host: the row the
+    /// pointer was on is the one that closes.
+    private func confirmCloseSpace(_ connectionId: String, _ workspaceId: String) {
+        guard
+            let connection = connections.connection(id: connectionId),
+            let space = connection.session.spaces.first(where: { $0.workspaceId == workspaceId }),
+            let window
+        else { return }
+        let session = connection.session
+        let panes = session.panes(inSpace: workspaceId)
+        let needsAsking: Bool
+        switch GhosttyRuntime.config.confirmClose {
+        case .never:
+            needsAsking = false
+        case .always:
+            needsAsking = true
+        case .unlessTrivial:
+            needsAsking = panes.count > 1 || panes.contains { $0.agentStatus != .unknown }
+        }
+        guard needsAsking else {
+            session.closeSpace(workspaceId)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close \(session.title(ofSpace: space))?"
+        let host = session.target?.displayName ?? "the host"
+        alert.informativeText = panes.count == 1
+            ? "Its tab and pane will be closed on \(host)."
+            : "Its \(space.tabCount) tabs and \(panes.count) panes will be closed on \(host)."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Close Space")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            session.closeSpace(workspaceId)
         }
     }
 

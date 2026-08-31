@@ -74,6 +74,7 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     var onDisconnectHost: ((String) -> Void)?
     var onForgetHost: ((String) -> Void)?
     var onNewSpace: ((String) -> Void)?
+    var onCloseSpace: ((String) -> Void)?
 
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("SidebarCell")
 
@@ -260,29 +261,68 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
 
     // MARK: - Context menu
 
+    /// What the menu offers, and on which kind of row — one menu, but the two
+    /// kinds do not share its items.
+    ///
+    /// A host row is the connection: dial it, drop it, forget it. A space row is
+    /// a thing on the far side of one, and the host it belongs to is already a
+    /// row of its own directly above it, so "Disconnect" on a space was offering
+    /// to drop a host the pointer was not on — and every item on the menu was
+    /// about the connection, which left the space itself with nothing that could
+    /// close it.
+    private struct ContextItem {
+        /// Empty for the separator, which is drawn only where there are items on
+        /// both sides of it to separate.
+        var title = ""
+        var action: Selector?
+        var kinds: Set<SidebarModel.Kind>
+    }
+
+    private static let contextItems: [ContextItem] = [
+        ContextItem(title: "New Space", action: #selector(newSpaceForClickedRow), kinds: [.host, .space]),
+        ContextItem(title: "Close Space", action: #selector(closeClickedSpace), kinds: [.space]),
+        ContextItem(kinds: [.host]),
+        ContextItem(title: "Reconnect", action: #selector(reconnectClickedRow), kinds: [.host]),
+        ContextItem(title: "Disconnect", action: #selector(disconnectClickedRow), kinds: [.host]),
+        ContextItem(title: "Remove Host", action: #selector(forgetClickedRow), kinds: [.host]),
+    ]
+
     private func buildContextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
         // `menuNeedsUpdate` decides what applies to the clicked row; AppKit's
         // own autoenabling would just overwrite it.
         menu.autoenablesItems = false
-        for (title, action) in [
-            ("New Space", #selector(newSpaceForClickedRow)),
-            ("Reconnect", #selector(reconnectClickedRow)),
-            ("Disconnect", #selector(disconnectClickedRow)),
-            ("Remove Host", #selector(forgetClickedRow)),
-        ] {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-            item.target = self
+        // Built once and hidden per click rather than rebuilt per click: the
+        // items are fixed, and a menu that grows its own items in
+        // `menuNeedsUpdate` has to be careful about the one it is already
+        // showing. The kinds ride on the item so the two lists cannot drift.
+        for entry in Self.contextItems {
+            let item: NSMenuItem
+            if let action = entry.action {
+                item = NSMenuItem(title: entry.title, action: action, keyEquivalent: "")
+                item.target = self
+            } else {
+                item = .separator()
+            }
+            item.representedObject = entry.kinds
             menu.addItem(item)
         }
         return menu
     }
 
-    /// The host the context menu applies to: the clicked row, or the host that
-    /// owns the clicked space.
+    /// The row the pointer is on, whichever kind it is.
+    private var clickedRowId: String? {
+        guard outline.clickedRow >= 0 else { return nil }
+        return outline.item(atRow: outline.clickedRow) as? String
+    }
+
+    /// The host the connection items apply to: the clicked row, or the host that
+    /// owns the clicked space. A space row no longer offers those items, but it
+    /// still needs its host — a space on a host that is not attached has nothing
+    /// to ask the server with.
     private var clickedHostId: String? {
-        guard outline.clickedRow >= 0, let id = outline.item(atRow: outline.clickedRow) as? String else { return nil }
+        guard let id = clickedRowId else { return nil }
         if model.isHost(id) { return id }
         return model.spaces.first { $0.value.contains { $0.id == id } }?.key
     }
@@ -307,6 +347,12 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     @objc private func forgetClickedRow() {
         guard let id = clickedHostId else { return }
         onForgetHost?(id)
+    }
+
+    /// The clicked row itself, not its host: this one is about the space.
+    @objc private func closeClickedSpace() {
+        guard let id = clickedRowId, model.row(id)?.kind == .space else { return }
+        onCloseSpace?(id)
     }
 
     // MARK: - NSOutlineViewDataSource
@@ -369,13 +415,17 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
 extension SidebarView: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         let host = clickedHostId.flatMap { model.row($0) }
+        // A right-click below the last row is on no row at all. It shows the
+        // host items, all disabled, because that is what an empty sidebar's
+        // menu was before there were two kinds of them — and a menu with every
+        // item hidden is an empty grey box.
+        let kind = clickedRowId.flatMap { model.row($0)?.kind } ?? .host
         for item in menu.items {
+            item.isHidden = !((item.representedObject as? Set<SidebarModel.Kind>)?.contains(kind) ?? false)
             switch item.title {
-            case "New Space":
-                item.isEnabled = host?.offline == false
-            case "Reconnect":
-                item.isEnabled = host != nil
-            case "Disconnect":
+            case "New Space", "Disconnect", "Close Space":
+                // Everything that asks the server something needs a server to
+                // ask: a remembered host that is not attached has no socket.
                 item.isEnabled = host?.offline == false
             default:
                 item.isEnabled = host != nil

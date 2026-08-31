@@ -63,7 +63,7 @@ hand to anyone else.
 
 Connect with an SSH config Host (the same target you would pass to `herdr --remote workbox`), `ssh://user@host:22`, or `local` to attach to a Herdr server on this Mac. The optional session name matches `herdr --remote host --session agents`.
 
-Hosts you have used before are listed in the sidebar, dimmed, on the next launch; clicking one attaches it. ⌘K adds another host to the same window rather than replacing the current one, and each host keeps its own connection, spaces and selection. Right-click a folder for New Space, Reconnect, Disconnect and Remove Host — ⌥⌘T does the same for the selected host, one modifier out from the ⌘T that makes a tab.
+Hosts you have used before are listed in the sidebar, dimmed, on the next launch; clicking one attaches it. ⌘K adds another host to the same window rather than replacing the current one, and each host keeps its own connection, spaces and selection. Right-click a folder for New Space, Reconnect, Disconnect and Remove Host — ⌥⌘T does the same for the selected host, one modifier out from the ⌘T that makes a tab. Right-click a space and the menu is about that space: New Space and Close Space, which closes its tabs and panes on the server after asking, under the same `confirm-close-surface` a tab is closed under.
 
 To skip the connect sheet, name the target on the command line:
 
