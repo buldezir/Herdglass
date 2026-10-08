@@ -92,7 +92,18 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        updateBackingProperties()
+    }
+
+    private func updateBackingProperties() {
+        // We resize libghostty in pixels ourselves, so Core Animation must use
+        // the same scale without animating a second scaling of the contents.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer?.contentsScale = window?.backingScaleFactor ?? 1
+        CATransaction.commit()
         session.updateContentScale()
+        session.resize(to: bounds.size)
         session.setDisplayID(currentDisplayID())
     }
 
@@ -408,6 +419,11 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
                         Task { @MainActor [weak self] in
                             guard let self else { return }
                             self.session.setDisplayID(self.currentDisplayID())
+                            // AppKit may publish the new screen before its
+                            // backing scale; synchronize again on the next pass.
+                            DispatchQueue.main.async { [weak self] in
+                                self?.updateBackingProperties()
+                            }
                         }
                     }
                 )

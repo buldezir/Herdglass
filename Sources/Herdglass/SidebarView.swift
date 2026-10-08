@@ -57,6 +57,25 @@ struct SidebarModel {
     }
 }
 
+/// Keep a context menu tied to the row that opened it, even if a snapshot
+/// changes the row order while the menu is tracking.
+private final class SidebarOutlineView: NSOutlineView {
+    private(set) var contextItemId: String?
+    var onPointerInteraction: (() -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let row = row(at: convert(event.locationInWindow, from: nil))
+        contextItemId = row >= 0 ? item(atRow: row) as? String : nil
+        return super.menu(for: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let clickedRow = row(at: convert(event.locationInWindow, from: nil))
+        super.mouseDown(with: event)
+        if clickedRow >= 0 { onPointerInteraction?() }
+    }
+}
+
 @MainActor
 final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate {
     /// Whether the user drove the change with the pointer or the keyboard.
@@ -75,11 +94,13 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     var onForgetHost: ((String) -> Void)?
     var onNewSpace: ((String) -> Void)?
     var onCloseSpace: ((String) -> Void)?
+    /// Return the keyboard after a row click, including an already-selected row.
+    var onPointerInteraction: (() -> Void)?
 
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("SidebarCell")
 
     private let scroll = NSScrollView()
-    private let outline = NSOutlineView()
+    private let outline = SidebarOutlineView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private let addButton = NSButton()
     private var model = SidebarModel()
@@ -107,6 +128,13 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         outline.allowsMultipleSelection = false
         outline.dataSource = self
         outline.delegate = self
+        outline.onPointerInteraction = { [weak self] in
+            guard let self else { return }
+            // Selection notifications can arrive after mouseDown returns.
+            // Adopt the clicked selection before handing the keyboard over.
+            self.reportSelection(source: .pointer)
+            self.onPointerInteraction?()
+        }
         outline.menu = buildContextMenu()
 
         scroll.documentView = outline
@@ -311,10 +339,9 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
         return menu
     }
 
-    /// The row the pointer is on, whichever kind it is.
+    /// The stable identity captured when the context menu opened.
     private var clickedRowId: String? {
-        guard outline.clickedRow >= 0 else { return nil }
-        return outline.item(atRow: outline.clickedRow) as? String
+        outline.contextItemId
     }
 
     /// The host the connection items apply to: the clicked row, or the host that
@@ -383,15 +410,19 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
+        let source: SelectionSource = switch NSApp.currentEvent?.type {
+        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .otherMouseDown: .pointer
+        default: .keyboard
+        }
+        reportSelection(source: source)
+    }
+
+    private func reportSelection(source: SelectionSource) {
         guard let id = selectedRowId else { return }
         // Our own `syncSelection` echoes back through here; only a row the user
         // moved to is news for the window.
         guard id != appliedSelectionId else { return }
         appliedSelectionId = id
-        let source: SelectionSource = switch NSApp.currentEvent?.type {
-        case .leftMouseDown, .leftMouseUp, .rightMouseDown, .otherMouseDown: .pointer
-        default: .keyboard
-        }
         if model.isHost(id) {
             onSelectHost?(id, source)
         } else {

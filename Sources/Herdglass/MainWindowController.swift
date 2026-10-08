@@ -102,6 +102,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: - Wiring
 
     private func wireSidebar() {
+        sidebar.onPointerInteraction = { [weak self] in self?.content.focusActivePane() }
         sidebar.onSelectHost = { [weak self] id, source in
             guard let self else { return }
             self.connections.select(id)
