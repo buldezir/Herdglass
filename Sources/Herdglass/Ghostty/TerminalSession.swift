@@ -356,6 +356,20 @@ final class TerminalSession {
         key.composing = false
         key.unshifted_codepoint = event.charactersIgnoringModifiers?.unicodeScalars.first?.value ?? 0
 
+        // Herdr sends rendered cells, so the pane's Kitty keyboard negotiation
+        // never reaches this surface. In legacy mode Shift+Enter becomes CR,
+        // indistinguishable from Submit in Codex. LF is the Ctrl+J newline
+        // fallback understood by terminal editors, and stays ordered with the
+        // rest of the input on the same PTY. Let configured bindings win.
+        let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        if action != GHOSTTY_ACTION_RELEASE,
+           (event.keyCode == 36 || event.keyCode == 76),
+           modifiers == .shift,
+           !ghostty_surface_key_is_binding(surface, key, nil),
+           perform(action: "text:\\n") {
+            return
+        }
+
         if let text, !text.isEmpty {
             text.withCString { ptr in
                 key.text = ptr
