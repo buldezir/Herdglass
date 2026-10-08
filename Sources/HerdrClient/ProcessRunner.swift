@@ -96,6 +96,7 @@ public enum ProcessRunner {
         extraEnv: [String: String],
         currentDirectory: String? = nil,
         stdin: String? = nil,
+        stdinFile: URL? = nil,
         inheritLoginPath: Bool = true,
         timeout: TimeInterval? = nil
     ) -> Result {
@@ -114,7 +115,14 @@ public enum ProcessRunner {
         proc.standardOutput = out
         proc.standardError = err
         let input = stdin.map { _ in Pipe() }
-        proc.standardInput = input ?? FileHandle.nullDevice
+        let fileInput: FileHandle?
+        do {
+            fileInput = try stdinFile.map { try FileHandle(forReadingFrom: $0) }
+        } catch {
+            return Result(terminationStatus: 127, stdout: "", stderr: error.localizedDescription)
+        }
+        defer { try? fileInput?.close() }
+        proc.standardInput = fileInput ?? input?.fileHandleForReading ?? FileHandle.nullDevice
 
         do {
             try proc.run()

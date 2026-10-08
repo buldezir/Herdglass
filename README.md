@@ -77,7 +77,7 @@ To skip the connect sheet, name the target on the command line:
 an Apple Silicon `macos-26` runner: it caches `Vendor/GhosttyKit.xcframework`
 against the `Vendor/ghostty` pin — so libghostty is rebuilt only when the pin
 moves, downloading the Metal toolchain when the runner image lacks it — then
-runs `Scripts/release.sh` and `swift test --filter HerdrClientTests`, and
+runs `Scripts/release.sh` and `swift test --no-parallel`, and
 uploads the `.app` as a `ditto` archive so its ad-hoc signature survives the
 round trip. The build is unsigned beyond that ad-hoc identity and not
 notarized; it is the same thing `release.sh` makes locally. The app is built
@@ -146,6 +146,14 @@ Frame / control JSON (Herdr 0.8.2):
 Requests on the API socket are **one-shot**: Herdr answers a single request and closes the connection. Only `events.subscribe` stays open and streams.
 
 Only the selected tab of the selected host is rendered, so only its panes hold bridges — switching tabs or hosts releases the previous ones.
+
+## File drops and image paste
+
+Drop files or folders into a pane to upload them to that pane's current directory on its host. Herdglass reuses the host's SSH connection; local hosts copy the files locally. Existing files and folders keep their contents: a duplicate gets a numbered name such as `image (2).png`.
+
+Paste a screenshot or copied image with ⌘V, the Paste menu item, or your Ghostty paste shortcut. Herdglass saves clipboard images as PNGs in the pane's current directory; images copied as files from Finder keep their original format and name. It pastes the host-side paths into the agent's input. File drops also paste the uploaded paths. The input stays editable; press Enter when you are ready to send it. Image support depends on the agent's ability to read image files from a path.
+
+Each pane shows upload progress, success, or an error. Transfers stay tied to the pane and host where they began when you switch tabs or hosts.
 
 ## Notifications
 

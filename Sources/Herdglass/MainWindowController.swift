@@ -152,6 +152,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             session.selectPane(paneId)
         }
         content.onPaneDetached = { [weak self] in self?.refresh() }
+        content.onUpload = { [weak self] paneId, upload, completion in
+            guard let session = self?.connections.selectedSession else {
+                completion(.failure(HerdrRPCError(code: "upload_disconnected", message: "Connect the host before uploading.")))
+                return
+            }
+            session.upload(upload, toPane: paneId, completion: completion)
+        }
         content.onSplitRatioChanged = { [weak self] path, ratio in
             self?.connections.selectedSession?.setSplitRatio(path: path, ratio: ratio)
         }

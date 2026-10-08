@@ -13,6 +13,7 @@ final class TerminalPaneView: NSView {
     /// The user clicked into this pane. In a split that is how the active pane
     /// changes, so it has to reach the session and not just libghostty.
     var onActivate: (() -> Void)?
+    var onUpload: PaneUploadHandler?
 
     /// Breathing room between the pane's edge and the terminal in it. Inside
     /// the pane rather than around it: the panes still tile the window edge to
@@ -49,6 +50,10 @@ final class TerminalPaneView: NSView {
     /// re-apply a changed `unfocused-split-opacity` without waiting for the next
     /// snapshot to call `decorate`.
     private var dimmed = false
+    private let uploadStatus = UploadStatusView()
+    private var uploadsInFlight = 0
+    private var uploadStatusGeneration = 0
+    private var uploadStatusInsets: [NSLayoutConstraint] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -70,6 +75,17 @@ final class TerminalPaneView: NSView {
             placeholder.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -24),
             placeholder.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        registerForDraggedTypes([.fileURL])
+        uploadStatus.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(uploadStatus)
+        uploadStatusInsets = [
+            uploadStatus.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ChromeMetrics.length(8)),
+            uploadStatus.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -ChromeMetrics.length(8)),
+            uploadStatus.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -ChromeMetrics.length(8)),
+        ]
+        NSLayoutConstraint.activate(uploadStatusInsets)
+        NotificationCenter.default.addObserver(self, selector: #selector(applyUploadMetrics),
+                                               name: ChromeMetrics.didChangeNotification, object: nil)
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(ghosttyConfigDidChange),
@@ -127,6 +143,12 @@ final class TerminalPaneView: NSView {
         if let session { GhosttyRuntime.apply(to: session) }
         applyGhosttyColors()
         applyScrim()
+    }
+
+    @objc private func applyUploadMetrics() {
+        for (index, constraint) in uploadStatusInsets.enumerated() {
+            constraint.constant = ChromeMetrics.length(8) * (index == 0 ? 1 : -1)
+        }
     }
 
     /// The terminal's own colours, on everything this app draws around it.
@@ -213,6 +235,9 @@ final class TerminalPaneView: NSView {
         // Clicking a pane in a split is how the user moves the active pane, so
         // the click has to be seen here as well as by libghostty.
         view.onPrimaryClick = { [weak self] in self?.onActivate?() }
+        view.onUpload = { [weak self] upload, completion in
+            self?.upload(upload, completion: completion)
+        }
         view.translatesAutoresizingMaskIntoConstraints = false
         addSubview(view, positioned: .below, relativeTo: placeholder)
         // The padded strip left over is this view's layer, painted in the same
@@ -295,6 +320,9 @@ final class TerminalPaneView: NSView {
     }
 
     func teardown() {
+        uploadsInFlight = 0
+        uploadStatusGeneration += 1
+        uploadStatus.hide()
         control?.close()
         control = nil
         scrollRemainder = 0
@@ -312,6 +340,49 @@ final class TerminalPaneView: NSView {
         currentPaneId = nil
         GhosttyRuntime.paneDetached()
         needsDisplay = true
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        terminalView != nil && onUpload != nil && !TerminalClipboard.files(from: sender.draggingPasteboard).isEmpty
+            && sender.draggingSourceOperationMask.contains(.copy) ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let files = TerminalClipboard.files(from: sender.draggingPasteboard)
+        guard let session, !files.isEmpty, onUpload != nil else { return false }
+        onActivate?()
+        focusTerminal()
+        upload(.files(files)) { [weak session] result in
+            if case .success(let paths) = result { session?.paste(PaneUpload.pastedPaths(paths)) }
+        }
+        return true
+    }
+
+    private func upload(_ upload: PaneUpload, completion: @escaping PaneUploadCompletion) {
+        guard let onUpload, let session else { return }
+        uploadsInFlight += 1
+        uploadStatusGeneration += 1
+        uploadStatus.show(upload.count == 1 ? "Uploading…" : "Uploading \(upload.count) files…", busy: true)
+        onUpload(upload) { [weak self, weak session] result in
+            guard let self, let session, self.session === session else { return }
+            self.uploadsInFlight -= 1
+            completion(result)
+            if self.uploadsInFlight > 0 { return }
+            self.uploadStatusGeneration += 1
+            switch result {
+            case .success(let paths):
+                self.uploadStatus.show("Uploaded \(paths.count == 1 ? (paths[0] as NSString).lastPathComponent : "\(paths.count) files")", busy: false)
+                let generation = self.uploadStatusGeneration
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    guard let self, self.uploadStatusGeneration == generation else { return }
+                    self.uploadStatus.hide()
+                }
+            case .failure(let error):
+                self.uploadStatus.show("Upload failed: \(error.localizedDescription)", busy: false)
+            }
+        }
     }
 
     /// Wheel and trackpad both land here. AppKit has already applied the
@@ -356,6 +427,73 @@ final class TerminalPaneView: NSView {
         )
         detachedPaneId = closedPaneId
         onDetach?()
+    }
+}
+
+/// Transfer feedback stays with its pane, including when a tab is parked.
+private final class UploadStatusView: NSVisualEffectView {
+    private let label = NSTextField(labelWithString: "")
+    private let spinner = NSProgressIndicator()
+    private let stack = NSStackView()
+    private var padding: [NSLayoutConstraint] = []
+    private var spinnerSize: [NSLayoutConstraint] = []
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = ChromeMetrics.length(5)
+        isHidden = true
+        label.lineBreakMode = .byTruncatingTail
+        label.maximumNumberOfLines = 1
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        stack.orientation = .horizontal
+        stack.addArrangedSubview(spinner)
+        stack.addArrangedSubview(label)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        padding = [
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: ChromeMetrics.length(8)),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -ChromeMetrics.length(8)),
+            stack.topAnchor.constraint(equalTo: topAnchor, constant: ChromeMetrics.length(5)),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -ChromeMetrics.length(5)),
+        ]
+        spinnerSize = [spinner.widthAnchor.constraint(equalToConstant: ChromeMetrics.length(14)),
+                       spinner.heightAnchor.constraint(equalToConstant: ChromeMetrics.length(14))]
+        NSLayoutConstraint.activate(padding + spinnerSize)
+        applyChromeMetrics()
+        NotificationCenter.default.addObserver(self, selector: #selector(applyChromeMetrics),
+                                               name: ChromeMetrics.didChangeNotification, object: nil)
+    }
+
+    required init?(coder: NSCoder) { nil }
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func applyChromeMetrics() {
+        label.font = ChromeMetrics.font(11)
+        stack.spacing = ChromeMetrics.length(6)
+        layer?.cornerRadius = ChromeMetrics.length(5)
+        for (index, constraint) in padding.enumerated() {
+            constraint.constant = ChromeMetrics.length(index < 2 ? 8 : 5) * (index % 2 == 0 ? 1 : -1)
+        }
+        for constraint in spinnerSize { constraint.constant = ChromeMetrics.length(14) }
+    }
+
+    func show(_ message: String, busy: Bool) {
+        label.stringValue = message.replacingOccurrences(of: "\n", with: " ")
+        toolTip = message
+        spinner.isHidden = !busy
+        if busy { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
+        isHidden = false
+    }
+
+    func hide() {
+        spinner.stopAnimation(nil)
+        isHidden = true
     }
 }
 

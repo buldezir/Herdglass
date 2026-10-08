@@ -141,7 +141,7 @@ jobs:
       - name: Test
         timeout-minutes: 15
         run: |
-          script -q /dev/null swift test --filter HerdrClientTests --no-parallel 2>&1 &
+          script -q /dev/null swift test --no-parallel 2>&1 &
           TEST=$!
           (
             sleep 300

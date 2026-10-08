@@ -48,5 +48,10 @@ let package = Package(
             dependencies: ["HerdrClient"],
             path: "Tests/HerdrClientTests"
         ),
+        .testTarget(
+            name: "HerdglassTests",
+            dependencies: ["Herdglass"],
+            path: "Tests/HerdglassTests"
+        ),
     ]
 )

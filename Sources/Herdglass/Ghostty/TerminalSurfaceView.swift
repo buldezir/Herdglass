@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import HerdrClient
 
 // Ported from GhosttyKit (MIT, https://github.com/briannadoubt/GhosttyKit).
 // The closure struct it routed everything through is gone — this talks to its
@@ -26,6 +27,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     /// A left click landed here. In a split that is how the active pane changes,
     /// so it has to be seen outside libghostty as well.
     var onPrimaryClick: (() -> Void)?
+    var onUpload: PaneUploadHandler?
 
     private var trackingArea: NSTrackingArea?
     private var markedText = NSMutableAttributedString()
@@ -45,6 +47,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         applyBackgroundColor()
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -187,6 +190,24 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        onUpload != nil && !TerminalClipboard.files(from: sender.draggingPasteboard).isEmpty
+            && sender.draggingSourceOperationMask.contains(.copy) ? .copy : []
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let files = TerminalClipboard.files(from: sender.draggingPasteboard)
+        guard !files.isEmpty, onUpload != nil else { return false }
+        onPrimaryClick?()
+        requestWindowFirstResponder()
+        upload(.files(files))
+        return true
+    }
+
     // MARK: - Keyboard
 
     override func keyDown(with event: NSEvent) {
@@ -225,8 +246,32 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     }
 
     @objc func paste(_ sender: Any?) {
+        if pasteImage() { return }
         guard let text = NSPasteboard.general.string(forType: .string) else { return }
         session.paste(text)
+    }
+
+    /// Also used by libghostty's clipboard callback, so custom paste keybinds
+    /// and the Edit/context menus all reach the same image upload path.
+    @discardableResult
+    func pasteImage() -> Bool {
+        guard onUpload != nil, TerminalClipboard.hasImage(.general) else { return false }
+        guard let image = TerminalClipboard.imageUpload(from: .general) else {
+            NSSound.beep()
+            return true
+        }
+        upload(image)
+        return true
+    }
+
+    private func upload(_ upload: PaneUpload) {
+        let session = self.session
+        onUpload?(upload) { [weak self, weak session] result in
+            guard let self, let session, self.session === session else { return }
+            if case .success(let paths) = result {
+                session.paste(PaneUpload.pastedPaths(paths))
+            }
+        }
     }
 
     override func selectAll(_ sender: Any?) {
@@ -498,6 +543,7 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
             return session.hasSelection()
         case #selector(paste(_:)):
             return NSPasteboard.general.string(forType: .string) != nil
+                || (onUpload != nil && TerminalClipboard.hasImage(.general))
         case #selector(selectAll(_:)), #selector(openTerminalConfig(_:)):
             return true
         case #selector(openHoveredLink(_:)), #selector(copyHoveredLink(_:)):

@@ -34,6 +34,7 @@ final class SplitContainerView: NSView {
     var onActivatePane: ((String) -> Void)?
     var onPaneDetached: (() -> Void)?
     var onSplitRatioChanged: (([Bool], Double) -> Void)?
+    var onUpload: ((String, PaneUpload, @escaping PaneUploadCompletion) -> Void)?
 
     /// How many panes stay attached after their tab stops being the one on
     /// screen. Each is a local bridge and a remote `terminal session control`,
@@ -238,6 +239,13 @@ final class SplitContainerView: NSView {
         let view = TerminalPaneView()
         view.onActivate = { [weak self] in self?.onActivatePane?(paneId) }
         view.onDetach = { [weak self] in self?.onPaneDetached?() }
+        view.onUpload = { [weak self] upload, completion in
+            guard let onUpload = self?.onUpload else {
+                completion(.failure(HerdrRPCError(code: "upload_unavailable", message: "File upload is unavailable.")))
+                return
+            }
+            onUpload(paneId, upload, completion)
+        }
         paneViews[paneId] = view
         return view
     }

@@ -39,6 +39,9 @@ final class TerminalSession {
     /// The surface's process went away. `processAlive` is true when libghostty is
     /// asking to close rather than reporting a child that already exited.
     var closeHandler: ((Bool) -> Void)?
+    /// Clipboard reads during a keybinding are user pastes. A program's OSC 52
+    /// query runs on the I/O thread and must never start a file upload.
+    private(set) var isReadingClipboardForPaste = false
     nonisolated(unsafe) private var secureEventInputEnabled = false
 
     init(host: TerminalHost, configuration: Launch = Launch()) {
@@ -210,6 +213,9 @@ final class TerminalSession {
     @discardableResult
     func perform(action: String) -> Bool {
         guard let surface else { return false }
+        let previous = isReadingClipboardForPaste
+        if action == "paste_from_clipboard" { isReadingClipboardForPaste = true }
+        defer { isReadingClipboardForPaste = previous }
         return action.withCString { ptr in
             ghostty_surface_binding_action(surface, ptr, UInt(action.utf8.count))
         }
@@ -348,6 +354,9 @@ final class TerminalSession {
 
     private func sendKeyEvent(_ event: NSEvent, action: ghostty_input_action_e, text: String?) {
         guard let surface else { return }
+        let previous = isReadingClipboardForPaste
+        isReadingClipboardForPaste = true
+        defer { isReadingClipboardForPaste = previous }
         var key = ghostty_input_key_s()
         key.action = action
         key.keycode = UInt32(event.keyCode)

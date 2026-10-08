@@ -300,6 +300,10 @@ public struct PaneInfo: Codable, Sendable, Identifiable {
 
     public var id: String { paneId }
 
+    public var currentDirectory: String? {
+        [foregroundCwd, cwd].compactMap { $0 }.first { !$0.isEmpty }
+    }
+
     /// The directory the pane is in, as a name rather than a path: the last
     /// component of where the foreground program is, `~` for a home directory.
     ///

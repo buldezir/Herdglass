@@ -192,12 +192,35 @@ private func terminalHostReadClipboard(
     _ state: UnsafeMutableRawPointer?
 ) -> Bool {
     guard location != GHOSTTY_CLIPBOARD_SELECTION else { return false }
-    guard let session = terminalSession(from: userdata), let surface = session.surface else { return false }
-    guard let text = NSPasteboard.general.string(forType: .string) else { return false }
-    text.withCString { ptr in
-        ghostty_surface_complete_clipboard_request(surface, ptr, state, false)
+    guard let session = terminalSession(from: userdata) else { return false }
+    let userPaste = Thread.isMainThread && MainActor.assumeIsolated { session.isReadingClipboardForPaste }
+    if Thread.isMainThread {
+        let available = MainActor.assumeIsolated {
+            NSPasteboard.general.string(forType: .string) != nil
+                || (userPaste && TerminalClipboard.hasImage(.general) && session.view?.onUpload != nil)
+        }
+        guard available else { return false }
+    }
+    let request = ClipboardReadState(pointer: state)
+    // Keep the session alive across the hop, just like the action callback.
+    // Complete the libghostty request before starting a potentially long image
+    // transfer; the uploaded path later enters through surface_text (a paste).
+    Task { @MainActor in
+        guard let surface = session.surface else { return }
+        if userPaste, TerminalClipboard.hasImage(.general), session.view?.onUpload != nil {
+            "".withCString { ghostty_surface_complete_clipboard_request(surface, $0, request.pointer, false) }
+            session.view?.pasteImage()
+        } else {
+            let text = NSPasteboard.general.string(forType: .string) ?? ""
+            text.withCString { ghostty_surface_complete_clipboard_request(surface, $0, request.pointer, false) }
+        }
     }
     return true
+}
+
+/// Opaque libghostty-owned state, carried to the main actor and consumed there.
+private struct ClipboardReadState: @unchecked Sendable {
+    let pointer: UnsafeMutableRawPointer?
 }
 
 /// libghostty asks before pasting something that looks unsafe. This app pastes

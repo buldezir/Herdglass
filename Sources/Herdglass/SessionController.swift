@@ -177,6 +177,31 @@ final class SessionController {
 
     // MARK: - Connection
 
+    func upload(_ upload: PaneUpload, toPane paneId: String, completion: @escaping PaneUploadCompletion) {
+        guard let connection, let rpc, state.isConnected else {
+            completion(.failure(HerdrRPCError(code: "upload_disconnected", message: "Connect the host before uploading.")))
+            return
+        }
+        // Resolve the cwd on the worker immediately before transferring, not
+        // from the selected pane (which can change while this is queued).
+        work.async { [weak self] in
+            let result = Result {
+                let snapshot = try rpc.snapshot()
+                guard let pane = snapshot.pane(paneId), let directory = pane.currentDirectory else {
+                    throw HerdrRPCError(code: "upload_directory", message: "The pane is gone or has not reported its current directory.")
+                }
+                return try upload.upload(using: connection, to: directory)
+            }
+            DispatchQueue.main.async {
+                guard let self, self.connection === connection else {
+                    completion(.failure(HerdrRPCError(code: "upload_disconnected", message: "The host disconnected during the upload.")))
+                    return
+                }
+                completion(result)
+            }
+        }
+    }
+
     func connect(_ target: ConnectTarget, completion: ((Error?) -> Void)? = nil) {
         disconnect()
         self.target = target

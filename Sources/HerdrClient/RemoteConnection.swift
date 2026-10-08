@@ -80,6 +80,27 @@ public final class RemoteConnection: @unchecked Sendable {
         try? FileManager.default.removeItem(at: workDir)
     }
 
+    /// Runs on the session's worker, reusing its SSH master. Archives travel
+    /// through a file descriptor, so a large drop never lives in memory.
+    public func upload(files: [URL], to directory: String) throws -> [String] {
+        try FileUpload.upload(files: files, to: directory) { [self] arguments, script, archive in
+            lock.lock()
+            let closed = isClosed
+            lock.unlock()
+            guard !closed else {
+                return ProcessRunner.Result(terminationStatus: 1, stdout: "", stderr: "The host disconnected during the upload.")
+            }
+            if target.isLocal {
+                let executable = arguments[0] == "bash" ? "/bin/bash" : "/usr/bin/tar"
+                return ProcessRunner.run(
+                    executable: executable, arguments: Array(arguments.dropFirst()), extraEnv: [:],
+                    stdin: script, stdinFile: archive, timeout: 300
+                )
+            }
+            return ssh(arguments.map(\.shellEscaped), stdin: script, stdinFile: archive, timeout: 300)
+        }
+    }
+
     private func openLocal() throws {
         let configDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/herdr", isDirectory: true)
@@ -244,6 +265,7 @@ public final class RemoteConnection: @unchecked Sendable {
     private func ssh(
         _ extra: [String],
         stdin: String? = nil,
+        stdinFile: URL? = nil,
         timeout: TimeInterval? = sshTimeout
     ) -> ProcessRunner.Result {
         let sshTarget = SSHTarget(host: target.host)
@@ -267,6 +289,7 @@ public final class RemoteConnection: @unchecked Sendable {
             arguments: args,
             extraEnv: [:],
             stdin: stdin,
+            stdinFile: stdinFile,
             timeout: timeout
         )
     }
