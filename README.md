@@ -59,7 +59,13 @@ stamps the commit into `CFBundleVersion`; `--install` copies it to `/Application
 ```
 
 It is ad-hoc signed for this Mac only — not notarized, so it is not something to
-hand to anyone else.
+hand to anyone else. A [Release](https://github.com/buldezir/Herdglass/releases)
+is signed with Developer ID and notarized, and updates itself: **Check for
+Updates…** is in the Herdglass menu, and Settings turns the daily checks and
+automatic installs on and off. Drag it into Applications before you open it:
+macOS runs an app opened where it was downloaded from a temporary copy, which
+can't update itself (`xattr -dr com.apple.quarantine` on the app in
+Applications fixes one that says it can't be updated).
 
 Connect with an SSH config Host (the same target you would pass to `herdr --remote workbox`), `ssh://user@host:22`, or `local` to attach to a Herdr server on this Mac. The optional session name matches `herdr --remote host --session agents`.
 
@@ -77,11 +83,53 @@ To skip the connect sheet, name the target on the command line:
 an Apple Silicon `macos-26` runner: it caches `Vendor/GhosttyKit.xcframework`
 against the `Vendor/ghostty` pin — so libghostty is rebuilt only when the pin
 moves, downloading the Metal toolchain when the runner image lacks it — then
-runs `Scripts/release.sh` and `swift test --no-parallel`, and
-uploads the `.app` as a `ditto` archive so its ad-hoc signature survives the
-round trip. The build is unsigned beyond that ad-hoc identity and not
-notarized; it is the same thing `release.sh` makes locally. The app is built
-before the tests run, so a broken test still leaves a downloadable build.
+runs `Scripts/release.sh` and `swift test --no-parallel`, and uploads the
+`.app` as a `ditto` archive so its signature survives the round trip. A push
+or pull request builds the same ad-hoc signed app `release.sh` makes locally.
+The app is built before the tests run, so a broken test still leaves a
+downloadable build.
+
+A `v*` tag, or a run by hand, builds a release:
+
+- The tag sets the version, and a build number that only grows
+  (`0.4.0-beta.2` → 40002, `0.4.0` → 40099), which Sparkle compares;
+  `release.sh` takes them as `VERSION` and `BUILD`. A local build is version
+  `0.1`, with the commit as its build, and doesn't update.
+- `release.sh` signs the app (`IDENTITY`) with the Developer ID certificate in
+  the repository's secrets (`MACOS_CERTIFICATE_P12_BASE64`,
+  `MACOS_CERTIFICATE_PASSWORD`), with the hardened runtime and a secure
+  timestamp, and Sparkle's helpers with `Scripts/sign-sparkle.sh`; the
+  workflow notarizes it with an App Store Connect API key
+  (`NOTARY_API_KEY_BASE64`, `NOTARY_API_KEY_ID`, `NOTARY_API_ISSUER_ID`) and
+  staples the ticket. Under the hardened runtime, a program in a pane asks
+  macOS for AppleScript, the camera and the like as Herdglass, and is refused
+  what `Resources/Herdglass.entitlements` — Ghostty's — doesn't allow. An
+  ad-hoc build goes without the runtime, whose library validation would stop
+  it from loading Sparkle.framework.
+- `Scripts/appcast.sh` writes the app's Sparkle feed,
+  `Herdglass-macOS-appcast.xml`: the zip's EdDSA signature
+  (`SPARKLE_PRIVATE_KEY`, checked against the app's `SUPublicEDKey`) and the
+  release's notes up to its `## Downloads`, if the release is written by then.
+- A tag without the secrets fails. A run by hand takes a `version`, such as
+  `0.4.0-test.1`, to build an app that offers and takes updates, and a
+  `bundle_id`, such as `dev.herdr.term.updatetest`, to keep it apart from the
+  installed one.
+
+The app updates itself with Sparkle (`AppUpdater`), from the latest release's
+feed (`SUFeedURL`). `release.sh` and `dev.sh` copy Sparkle.framework into the
+app, where the binary finds it through `@executable_path/../Frameworks`; the
+`--bridge` children load it too, and never start it. Sparkle installs only
+updates signed with the key whose public half is `SUPublicEDKey` in
+`Resources/Info.plist`. Its private half is in the login keychain of the Mac
+that made it, and in the repository's secrets; keep a backup, since without
+it the app can never update again:
+
+```bash
+mkdir -p ~/sparkle && curl -fsSL https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz | tar -xf - -C ~/sparkle
+~/sparkle/bin/generate_keys --account herdglass         # prints the public key
+~/sparkle/bin/generate_keys --account herdglass -x ~/sparkle/private-key
+gh secret set SPARKLE_PRIVATE_KEY < ~/sparkle/private-key
+```
 
 The tests run `--no-parallel` there, and that is not a preference. Swift's
 cooperative pool is one thread per core, `ProcessRunner.run` blocks its caller
@@ -93,12 +141,11 @@ cores than there are blocking tests can do the same, so a `swift test` that
 hangs on a small Mac is this, not the suite being slow.
 
 A run's zip is under **Artifacts** on the run summary, which needs a GitHub
-login to download. Pushing a `v*` tag additionally attaches it to a
-[Release](https://github.com/buldezir/Herdglass/releases) as
-`Herdglass-<tag>-macos-arm64.zip`, which does not — with the sha256 and the
-`xattr -dr com.apple.quarantine` line an ad-hoc signed, un-notarized bundle
-needs in the notes. Re-running a tag's build replaces that asset instead of
-failing. GitHub Packages is not an option: it has no generic binary registry,
+login to download. A `v*` tag's release job, once the tests pass, attaches it
+to a [Release](https://github.com/buldezir/Herdglass/releases) as
+`Herdglass-macOS-arm64.zip`, which does not, with `SHA256SUMS`, and then the
+feed, so that an app that reads the feed finds its zip. Re-running a tag's
+build replaces those assets instead of failing. GitHub Packages is not an option: it has no generic binary registry,
 only npm/RubyGems/Maven/Gradle/NuGet and the container registry.
 
 ## App icon

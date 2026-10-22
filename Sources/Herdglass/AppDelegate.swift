@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         RemoteConnection.pruneStaleWorkDirs()
         AgentNotifications.prepare(delegate: self)
+        AppUpdater.shared.start()
         // A launch with no `--connect` restores: the hosts that were attached
         // when the app was last running come back with it.
         showMainWindow(target: initialTarget, restoringHosts: initialTarget == nil)
@@ -103,6 +104,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    @objc func checkForUpdates(_ sender: Any?) {
+        AppUpdater.shared.checkForUpdates()
+    }
+
     /// Open the pane a notification came from: its host, its space and tab, and
     /// the keyboard. The pane belongs to a host the window may not be showing.
     private func reveal(paneId: String) {
@@ -141,6 +146,16 @@ extension AppDelegate: UNUserNotificationCenterDelegate {
     }
 }
 
+extension AppDelegate: NSMenuItemValidation {
+    /// Check for Updates… offers the update a daily check found while the app
+    /// was in the background, if there is one.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(checkForUpdates(_:)) else { return true }
+        menuItem.title = AppUpdater.shared.menuTitle
+        return AppUpdater.shared.canCheck || AppUpdater.shared.available != nil
+    }
+}
+
 /// The menu bar. Built in code because there is no nib; kept close to the
 /// standard AppKit layout so the usual shortcuts all exist.
 @MainActor
@@ -168,6 +183,9 @@ enum MainMenu {
     private static func app() -> NSMenu {
         let menu = NSMenu(title: "Herdglass")
         menu.addItem(withTitle: "About Herdglass", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        if AppUpdater.shared.isRelease {
+            menu.addItem(withTitle: "Check for Updates…", action: #selector(AppDelegate.checkForUpdates(_:)), keyEquivalent: "")
+        }
         menu.addItem(.separator())
         menu.addItem(withTitle: "Settings…", action: #selector(AppDelegate.showSettings(_:)), keyEquivalent: ",")
         menu.addItem(.separator())

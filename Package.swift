@@ -11,6 +11,10 @@ let package = Package(
         .executable(name: "Herdglass", targets: ["Herdglass"]),
         .library(name: "HerdrClient", targets: ["HerdrClient"]),
     ],
+    dependencies: [
+        // The app's updater; Scripts/appcast.sh writes its feed.
+        .package(url: "https://github.com/sparkle-project/Sparkle", .upToNextMinor(from: "2.10.0")),
+    ],
     targets: [
         // libghostty, built from the pinned ghostty checkout in Vendor/ghostty
         // by Scripts/libghostty.sh. Its module map names the module GhosttyKit,
@@ -28,6 +32,7 @@ let package = Package(
             dependencies: [
                 "HerdrClient",
                 "GhosttyKit",
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/Herdglass",
             linkerSettings: [

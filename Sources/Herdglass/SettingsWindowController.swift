@@ -29,6 +29,18 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         target: nil,
         action: nil
     )
+    /// Sparkle's own settings, which only a release has: a local build doesn't update.
+    private let checksForUpdates = NSButton(
+        checkboxWithTitle: "Check for updates automatically",
+        target: nil,
+        action: nil
+    )
+    private let installsUpdates = NSButton(
+        checkboxWithTitle: "Download and install automatically",
+        target: nil,
+        action: nil
+    )
+    private var updatesExplanation: NSTextField?
     private let fontSize = NSStepper()
     private let fontSizeValue = NSTextField(labelWithString: "")
     private var fontSizeValueWidth: NSLayoutConstraint?
@@ -98,12 +110,24 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         buildDeniedRow()
 
-        let separators = [separator(), separator()]
-        let stack = NSStackView(views: [
+        var separators = [separator(), separator()]
+        var views: [NSView] = [
             appearanceHeading, sizeRow, sizeExplanation, separators[0],
             keyboardHeading, spaceKeys, spaceKeysExplanation, separators[1],
             heading, notifications, explanation, deniedRow,
-        ])
+        ]
+        if AppUpdater.shared.isRelease {
+            let line = separator()
+            separators.append(line)
+            checksForUpdates.target = self
+            checksForUpdates.action = #selector(toggleUpdateChecks)
+            installsUpdates.target = self
+            installsUpdates.action = #selector(toggleUpdateInstalls)
+            let updatesExplanation = wrappingLabel("")
+            self.updatesExplanation = updatesExplanation
+            views += [line, label("Updates", size: 13, weight: .semibold), checksForUpdates, installsUpdates, updatesExplanation]
+        }
+        let stack = NSStackView(views: views)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
@@ -114,6 +138,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.setCustomSpacing(16, after: spaceKeysExplanation)
         stack.setCustomSpacing(4, after: notifications)
         stack.setCustomSpacing(14, after: explanation)
+        stack.setCustomSpacing(14, after: deniedRow)
+        stack.setCustomSpacing(4, after: installsUpdates)
         for line in separators { stack.setCustomSpacing(16, after: line) }
         stack.translatesAutoresizingMaskIntoConstraints = false
 
@@ -208,6 +234,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         fontSizeValue.stringValue = "\(Int(ChromeMetrics.fontSize)) pt"
         fontSizeValue.font = .monospacedDigitSystemFont(ofSize: ChromeMetrics.length(11), weight: .regular)
         fontSizeValueWidth?.constant = ChromeMetrics.length(40)
+        let updater = AppUpdater.shared
+        checksForUpdates.state = updater.checksAutomatically ? .on : .off
+        installsUpdates.state = updater.downloadsAutomatically ? .on : .off
+        installsUpdates.isEnabled = updater.checksAutomatically
+        updatesExplanation?.stringValue = updater.checksAutomatically && updater.downloadsAutomatically
+            ? "Once a day. A new version installs when you quit Herdglass."
+            : "Once a day. Herdglass asks before installing a new version."
         AgentNotifications.authorizationStatus { [weak self] status in
             guard let self else { return }
             self.deniedRow.isHidden = status != .denied || !AgentNotifications.isEnabled
@@ -222,6 +255,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func toggleNotifications(_ sender: NSButton) {
         AgentNotifications.isEnabled = sender.state == .on
+        applySettings()
+    }
+
+    @objc private func toggleUpdateChecks(_ sender: NSButton) {
+        AppUpdater.shared.checksAutomatically = sender.state == .on
+        applySettings()
+    }
+
+    @objc private func toggleUpdateInstalls(_ sender: NSButton) {
+        AppUpdater.shared.downloadsAutomatically = sender.state == .on
         applySettings()
     }
 

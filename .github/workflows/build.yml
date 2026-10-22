@@ -1,11 +1,25 @@
 name: Build
 
+# Builds the app on every push and pull request. A tag like v0.4.0 also signs
+# it with Developer ID, notarizes it and publishes it as that tag's release,
+# with the app's update feed; running the workflow by hand signs and notarizes
+# it too, but only keeps it as a run artifact.
 on:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      version:
+        description: Version for the app, such as 0.4.0-test.1, to try its updates (a tag sets its own)
+        required: false
+      bundle_id:
+        description: Bundle ID for the app, such as dev.herdr.term.updatetest, so that test builds keep apart from the installed one
+        required: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
@@ -19,10 +33,12 @@ jobs:
     # from moving Xcode under a cached xcframework the key does not cover.
     runs-on: macos-26
     timeout-minutes: 90
-    # Only the Release step needs more than read: it creates the release and
-    # uploads the zip with the job's own GITHUB_TOKEN.
-    permissions:
-      contents: write
+    outputs:
+      ghostty: ${{ steps.libghostty.outputs.ref }}
+    env:
+      APP: .build/release-app/Herdglass.app
+      ASSET: Herdglass-macOS-arm64.zip
+      APPCAST: Herdglass-macOS-appcast.xml   # the app's SUFeedURL
 
     steps:
       - uses: actions/checkout@v7
@@ -104,26 +120,142 @@ jobs:
       # Says whether what the cache handed us still matches the pin; dev.sh and
       # release.sh run it too and stop if it does not.
       - name: Check libghostty
+        id: libghostty
         run: |
           ./Scripts/libghostty.sh --check
           cat Vendor/libghostty.version
+          echo "ref=$(sed -n 's/^ghostty_ref=//p' Vendor/libghostty.version)" >> "$GITHUB_OUTPUT"
+
+      # A tag's build is signed with Developer ID and notarized, so that macOS
+      # opens the download and keeps its permissions across updates; a tag
+      # without the certificate fails. A run by hand signs too when it can.
+      # Pushes and pull requests stay ad hoc: a fork's pull request gets no
+      # secrets, and notarizing every push would only cost minutes.
+      - name: Import the signing certificate
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          # A release is signed with Developer ID and notarized, so that macOS
+          # opens it and keeps its permissions across updates. A run by hand
+          # without the certificate signs ad hoc.
+          if [ -z "$CERTIFICATE_BASE64" ]; then
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then
+              echo "::error::MACOS_CERTIFICATE_P12_BASE64 isn't set; see CI in README.md"; exit 1
+            fi
+            exit 0
+          fi
+          keychain=$RUNNER_TEMP/signing.keychain-db
+          password=$(uuidgen)
+          echo "$CERTIFICATE_BASE64" | base64 -d > "$RUNNER_TEMP/certificate.p12"
+          # The certificate's issuer, in case the runner doesn't have it.
+          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$keychain"
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
 
       # The app is built and uploaded before the tests run, so a test that hangs
-      # or fails still leaves a downloadable build. The Release step is after
-      # them, so a tag's asset is only ever published from a green suite.
+      # or fails still leaves a downloadable build. The release job waits for
+      # them, so a tag's assets are only ever published from a green suite.
       - name: Build app
         timeout-minutes: 20
-        run: ./Scripts/release.sh
+        run: |
+          # Tags set the app's version, and a build number for Sparkle that
+          # only grows: 0.3.0-beta.2 → 30002, 0.3.0 → 30099. Other runs keep
+          # the source's, unless started with a version.
+          v=$INPUT_VERSION
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then v=${GITHUB_REF_NAME#v}; fi
+          if [ -n "$v" ]; then
+            [[ $v =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)(-[A-Za-z]*\.?([0-9]+))? ]] || { echo "::error::Not a version: $v"; exit 1; }
+            m=("${BASH_REMATCH[@]}")
+            export VERSION=$v BUILD=$((m[1] * 1000000 + m[2] * 10000 + m[3] * 100 + ${m[5]:-99}))
+          fi
+          if [ -n "$INPUT_BUNDLE_ID" ]; then export BUNDLE_ID=$INPUT_BUNDLE_ID; fi
+          # release.sh gives a Developer ID signature the hardened runtime and
+          # a secure timestamp, which notarization wants.
+          if [ -n "$SIGNING_KEYCHAIN" ]; then export IDENTITY="Developer ID Application"; fi
+          ./Scripts/release.sh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUNDLE_ID: ${{ inputs.bundle_id }}
 
-      # ditto keeps the bundle's symlinks and its ad-hoc signature; `zip` does
-      # not, and upload-artifact would re-zip the tree without them either way.
+      # ditto keeps the bundle's symlinks, its signature and its stapled ticket;
+      # `zip` does not, and upload-artifact would re-zip the tree without them
+      # either way.
       - name: Package
-        run: ditto -c -k --sequesterRsrc --keepParent .build/release-app/Herdglass.app .build/Herdglass.app.zip
+        run: |
+          codesign --verify --deep --strict "$APP"
+          for exe in "$APP"/Contents/MacOS/*; do lipo -archs "$exe"; done
+          plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist"
+          if [ -n "$SIGNING_KEYCHAIN" ]; then
+            for exe in "$APP"/Contents/MacOS/* "$APP"/Contents/Frameworks/*; do codesign -dvv "$exe" 2>&1 | grep -E '^(Identifier|Authority|Timestamp)='; done
+            # Apple checks the app and issues a ticket, stapled to the app so
+            # that its first launch needn't ask Apple.
+            key=$RUNNER_TEMP/notary.p8
+            echo "$NOTARY_KEY_BASE64" | base64 -d > "$key"
+            notary=(--key "$key" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+            ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/notarize.zip"
+            # Submitting and waiting are separate, and retried, so that the
+            # runner losing its connection for a moment doesn't fail the job.
+            id=
+            for attempt in 1 2 3; do
+              if xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" "${notary[@]}" --output-format json > "$RUNNER_TEMP/notary.json" &&
+                id=$(plutil -extract id raw "$RUNNER_TEMP/notary.json"); then break; fi
+              cat "$RUNNER_TEMP/notary.json"; sleep 30
+            done
+            if [ -z "$id" ]; then echo "::error::Couldn't submit for notarization"; exit 1; fi
+            echo "submission $id"
+            for attempt in 1 2 3 4 5; do
+              if xcrun notarytool wait "$id" "${notary[@]}" --timeout 1h --output-format json > "$RUNNER_TEMP/notary.json" &&
+                status=$(plutil -extract status raw "$RUNNER_TEMP/notary.json"); then break; fi
+              cat "$RUNNER_TEMP/notary.json"; status=; sleep 30
+            done
+            cat "$RUNNER_TEMP/notary.json"; echo
+            xcrun notarytool log "$id" "${notary[@]}" || true
+            if [ "$status" != Accepted ]; then echo "::error::Notarization: ${status:-no answer}"; exit 1; fi
+            xcrun stapler staple "$APP"
+            spctl --assess --type execute -vv "$APP"
+          fi
+          mkdir dist
+          ditto -c -k --keepParent "$APP" "dist/$ASSET"
+
+          # The app's update feed. Its notes are the release's, up to its
+          # Downloads; the release is usually written by the time the app is
+          # built. Without the key, a run by hand makes no feed.
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            if [[ $GITHUB_REF == refs/tags/v* ]]; then echo "::error::SPARKLE_PRIVATE_KEY isn't set; see CI in README.md"; exit 1; fi
+          else
+            gh release view "$GITHUB_REF_NAME" --json body --jq .body 2>/dev/null | sed '/^## Downloads/,$d' > "$RUNNER_TEMP/notes.md" || true
+            download="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+            Scripts/appcast.sh "$APP" "dist/$ASSET" "$download/$ASSET" \
+              "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" "$RUNNER_TEMP/notes.md" > "dist/$APPCAST"
+            cat "dist/$APPCAST"
+          fi
+        env:
+          NOTARY_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+          # Only a tag or a run by hand makes a feed; pushes and pull requests don't.
+          SPARKLE_PRIVATE_KEY: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && secrets.SPARKLE_PRIVATE_KEY || '' }}
+          GH_TOKEN: ${{ github.token }}
+      - name: Remove the signing keychain
+        if: always() && env.SIGNING_KEYCHAIN != ''
+        run: |
+          security delete-keychain "$SIGNING_KEYCHAIN"
+          rm -f "$RUNNER_TEMP/notary.p8"
 
       - uses: actions/upload-artifact@v7
         with:
           name: Herdglass-${{ github.sha }}
-          path: .build/Herdglass.app.zip
+          path: dist/
           if-no-files-found: error
 
       # --no-parallel because the suite deadlocks on a 3-core runner: Swift's
@@ -161,43 +293,43 @@ jobs:
           kill "$WATCHDOG" 2>/dev/null || true
           exit "$STATUS"
 
-      # A v* tag publishes the same zip as a Release asset, so a download needs
-      # no GitHub login — an Actions artifact does. Re-running a tag's build
-      # replaces the asset rather than failing on the existing release.
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish
+        working-directory: dist
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          NOTES: |
+            **Herdglass** (`Herdglass-macOS-arm64.zip`) needs macOS 14 on Apple silicon, and is built against ghostty `${{ needs.macos.outputs.ghostty }}`. It is signed with Developer ID and notarized by Apple, and updates itself: **Check for Updates…** is in the Herdglass menu.
+
+            Unzip it and drag `Herdglass.app` into Applications before you open it: macOS runs an app opened where it was downloaded from a temporary copy, which can't update itself. If it says it can't be updated, quit it and run `xattr -dr com.apple.quarantine /Applications/Herdglass.app`.
+
+            Run it from a shell — `/Applications/Herdglass.app/Contents/MacOS/Herdglass` — for remote hosts: launched from Finder it usually cannot reach `ssh-agent`.
         run: |
-          TAG="$GITHUB_REF_NAME"
-          NAME="Herdglass-$TAG-macos-arm64.zip"
-          cp .build/Herdglass.app.zip ".build/$NAME"
-          GHOSTTY="$(sed -n 's/^ghostty_ref=//p' Vendor/libghostty.version)"
-          SHA256="$(shasum -a 256 ".build/$NAME" | cut -d' ' -f1)"
-
-          # Built line by line rather than with a heredoc: this block is indented
-          # inside the YAML, and a heredoc would carry that indentation into the
-          # notes, where markdown reads ten leading spaces as a code block.
-          # An ad-hoc signature is per-machine and carries no notary ticket, so
-          # the quarantine step is said here rather than left to Gatekeeper's
-          # "damaged and can't be opened".
-          {
-            echo "Apple Silicon, macOS 14+. Built from \`$GITHUB_SHA\` against ghostty \`$GHOSTTY\`."
-            echo
-            echo '```bash'
-            echo "ditto -x -k $NAME ."
-            echo 'xattr -dr com.apple.quarantine Herdglass.app   # ad-hoc signed, not notarized'
-            echo 'ditto Herdglass.app /Applications/Herdglass.app'
-            echo '```'
-            echo
-            echo 'Run it from a shell — `/Applications/Herdglass.app/Contents/MacOS/Herdglass` —'
-            echo 'for remote hosts: launched from Finder it usually cannot reach `ssh-agent`.'
-            echo
-            echo "sha256: \`$SHA256\`"
-          } > .build/notes.md
-
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" ".build/$NAME" --clobber
+          sums=$(sha256sum *) && echo "$sums" > SHA256SUMS
+          # The app's update feed goes up last, so that an app that reads it
+          # finds its zip.
+          assets=() appcasts=()
+          for f in *; do
+            if [[ $f == *-appcast.xml ]]; then appcasts+=("$f"); else assets+=("$f"); fi
+          done
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
-            gh release create "$TAG" ".build/$NAME" --title "$TAG" --notes-file .build/notes.md
+            prerelease=()
+            if [[ $TAG == *-* ]]; then prerelease=(--prerelease); fi
+            gh release create "$TAG" --verify-tag --generate-notes --notes "$NOTES" "${prerelease[@]}" "${assets[@]}"
           fi
+          if [ ${#appcasts[@]} -gt 0 ]; then gh release upload "$TAG" "${appcasts[@]}" --clobber; fi

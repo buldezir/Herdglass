@@ -17,7 +17,7 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.0</string>
+	<string>0.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
@@ -32,5 +32,25 @@
 	<string>public.app-category.developer-tools</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>(c) 2026 Alexander Arutyunov. Business Source License 1.1. Terminal rendering by libghostty (MIT).</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>A program running within Herdglass would like to use AppleScript.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>A program running within Herdglass would like to access your Calendar.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>A program running within Herdglass would like to use the camera.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>A program running within Herdglass would like to access your Contacts.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>A program running within Herdglass would like to access your location information.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>A program running within Herdglass would like to use your microphone.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>A program running within Herdglass would like to access your Photo Library.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/buldezir/Herdglass/releases/latest/download/Herdglass-macOS-appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>+2iQwp7LG5o57K4T2KZxUuI4FzxWFFJZJlyo1GZ4Fbg=</string>
 </dict>
 </plist>
