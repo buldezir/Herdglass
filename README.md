@@ -369,11 +369,7 @@ on; the overlay is also in **Terminal → Switch Space…** for the pointer.
 
 ## License
 
-[Business Source License 1.1](LICENSE) — source available, not open source. Non-production use is
-free; production use is allowed too, except for shipping it as a competing commercial terminal,
-multiplexer, or remote-session product. Each version converts to the MIT License on 2030-08-21,
-or four years after that version was first published, whichever comes first.
+Herdglass is licensed under the [GNU Affero General Public License v3.0](LICENSE).
 
 Ghostty/libghostty and GhosttyKit stay MIT under their own terms — see
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). This repo does not vendor
-[cmux](https://github.com/manaflow-ai/cmux) (AGPL).
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

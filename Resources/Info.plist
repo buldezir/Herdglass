@@ -31,7 +31,7 @@
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.developer-tools</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>(c) 2026 Alexander Arutyunov. Business Source License 1.1. Terminal rendering by libghostty (MIT).</string>
+	<string>(c) 2026 Alexander Arutyunov. GNU AGPL v3. Terminal rendering by libghostty (MIT).</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>A program running within Herdglass would like to use AppleScript.</string>
 	<key>NSCalendarsUsageDescription</key>
