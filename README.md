@@ -79,17 +79,16 @@ To skip the connect sheet, name the target on the command line:
 
 ## CI
 
-`.github/workflows/build.yml` builds the app on every push and pull request, on
-an Apple Silicon `macos-26` runner: it caches `Vendor/GhosttyKit.xcframework`
-against the `Vendor/ghostty` pin — so libghostty is rebuilt only when the pin
-moves, downloading the Metal toolchain when the runner image lacks it — then
-runs `Scripts/release.sh` and `swift test --no-parallel`, and uploads the
-`.app` as a `ditto` archive so its signature survives the round trip. A push
-or pull request builds the same ad-hoc signed app `release.sh` makes locally.
-The app is built before the tests run, so a broken test still leaves a
-downloadable build.
+`.github/workflows/build.yml` builds releases only: a `v*` tag, or a run by
+hand. Pushes to `main` and pull requests build nothing. It runs on an Apple
+Silicon `macos-26` runner: it caches `Vendor/GhosttyKit.xcframework` against
+the `Vendor/ghostty` pin — so libghostty is rebuilt only when the pin moves,
+downloading the Metal toolchain when the runner image lacks it — then runs
+`Scripts/release.sh` and `swift test --no-parallel`, and uploads the `.app` as
+a `ditto` archive so its signature survives the round trip. The app is built
+before the tests run, so a broken test still leaves a downloadable build.
 
-A `v*` tag, or a run by hand, builds a release:
+A release build:
 
 - The tag sets the version, and a build number that only grows
   (`0.4.0-beta.2` → 40002, `0.4.0` → 40099), which Sparkle compares;

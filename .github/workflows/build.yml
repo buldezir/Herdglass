@@ -1,14 +1,12 @@
 name: Build
 
-# Builds the app on every push and pull request. A tag like v0.4.0 also signs
-# it with Developer ID, notarizes it and publishes it as that tag's release,
-# with the app's update feed; running the workflow by hand signs and notarizes
-# it too, but only keeps it as a run artifact.
+# Builds releases only. A tag like v0.4.0 signs the app with Developer ID,
+# notarizes it and publishes it as that tag's release, with the app's update
+# feed; running the workflow by hand signs and notarizes it too, but only keeps
+# it as a run artifact. Pushes to main and pull requests build nothing.
 on:
   push:
-    branches: [main]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
     inputs:
       version:
@@ -128,18 +126,13 @@ jobs:
 
       # A tag's build is signed with Developer ID and notarized, so that macOS
       # opens the download and keeps its permissions across updates; a tag
-      # without the certificate fails. A run by hand signs too when it can.
-      # Pushes and pull requests stay ad hoc: a fork's pull request gets no
-      # secrets, and notarizing every push would only cost minutes.
+      # without the certificate fails. A run by hand signs too when it can, and
+      # signs ad hoc when it can't.
       - name: Import the signing certificate
-        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
-          # A release is signed with Developer ID and notarized, so that macOS
-          # opens it and keeps its permissions across updates. A run by hand
-          # without the certificate signs ad hoc.
           if [ -z "$CERTIFICATE_BASE64" ]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               echo "::error::MACOS_CERTIFICATE_P12_BASE64 isn't set; see CI in README.md"; exit 1
@@ -169,8 +162,8 @@ jobs:
         timeout-minutes: 20
         run: |
           # Tags set the app's version, and a build number for Sparkle that
-          # only grows: 0.3.0-beta.2 → 30002, 0.3.0 → 30099. Other runs keep
-          # the source's, unless started with a version.
+          # only grows: 0.3.0-beta.2 → 30002, 0.3.0 → 30099. A run by hand
+          # keeps the source's, unless started with a version.
           v=$INPUT_VERSION
           if [[ $GITHUB_REF == refs/tags/v* ]]; then v=${GITHUB_REF_NAME#v}; fi
           if [ -n "$v" ]; then
@@ -243,8 +236,7 @@ jobs:
           NOTARY_KEY_BASE64: ${{ secrets.NOTARY_API_KEY_BASE64 }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
-          # Only a tag or a run by hand makes a feed; pushes and pull requests don't.
-          SPARKLE_PRIVATE_KEY: ${{ (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') && secrets.SPARKLE_PRIVATE_KEY || '' }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           GH_TOKEN: ${{ github.token }}
       - name: Remove the signing keychain
         if: always() && env.SIGNING_KEYCHAIN != ''
