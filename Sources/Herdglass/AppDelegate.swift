@@ -423,14 +423,18 @@ extension NSMenu {
     /// moves the menu item — the one thing that cannot be honoured is a config
     /// that spells ghostty's default out again, since a re-typed default and a
     /// default are the same two bytes to `ghostty_config_trigger`.
-    /// An item that ships with no key of its own — Open Terminal Config, whose
-    /// ⌘, *is* ghostty's default — takes the binding either way.
+    /// An item that ships with no key of its own — Reload Terminal Config —
+    /// takes ghostty's default, as long as no other item ships on that key.
     ///
-    /// Unless it collides. `open_config` is ⌘, in ghostty and Settings is ⌘,
-    /// everywhere in macOS, so those two items ship wanting the same key; a menu
-    /// with a duplicate key equivalent silently gives it to whichever item comes
-    /// first and the other simply stops working. The keybind wins, because it is
-    /// the user's own, and this app's default steps aside.
+    /// That proviso is ⌘,. `open_config` is ⌘, in ghostty and Settings is ⌘,
+    /// everywhere in macOS, and a menu with a duplicate key equivalent silently
+    /// gives it to whichever item comes first. A ghostty default is no stronger
+    /// a claim than this app's own, and ⌘, is the key a Mac user presses for
+    /// an app's settings, so Settings keeps it and Open Terminal Config goes
+    /// without unless a `keybind` puts it somewhere.
+    ///
+    /// A keybind the user wrote is a different matter: it wins, and this app's
+    /// default steps aside.
     ///
     /// *Whichever* default it is. Stepping aside used to be for items with no
     /// ghostty action at all, which left the collision this app is most likely
@@ -440,15 +444,34 @@ extension NSMenu {
     /// key only if the config is what gave it that key; anything still wearing
     /// its own default gets out of the way of a binding the user wrote.
     func applyGhosttyShortcuts(_ config: GhosttyConfig) {
-        surrenderShortcuts(to: applyGhosttyTriggers(config), config)
+        surrenderShortcuts(to: applyGhosttyTriggers(config, worn: wornShortcuts()), config)
     }
 
-    private func applyGhosttyTriggers(_ config: GhosttyConfig) -> Set<GhosttyConfig.Shortcut> {
+    /// Every key equivalent an item of this menu is wearing, submenus included.
+    private func wornShortcuts() -> Set<GhosttyConfig.Shortcut> {
+        items.reduce(into: []) { worn, item in
+            worn.formUnion(item.submenu?.wornShortcuts() ?? [])
+            guard !item.keyEquivalent.isEmpty else { return }
+            worn.insert(GhosttyConfig.Shortcut(
+                keyEquivalent: item.keyEquivalent,
+                modifiers: item.keyEquivalentModifierMask
+            ))
+        }
+    }
+
+    private func applyGhosttyTriggers(
+        _ config: GhosttyConfig,
+        worn: Set<GhosttyConfig.Shortcut>
+    ) -> Set<GhosttyConfig.Shortcut> {
         var claimed: Set<GhosttyConfig.Shortcut> = []
         for item in items {
-            claimed.formUnion(item.submenu?.applyGhosttyTriggers(config) ?? [])
+            claimed.formUnion(item.submenu?.applyGhosttyTriggers(config, worn: worn) ?? [])
             guard let action = item.ghosttyAction, let shortcut = config.shortcut(action) else { continue }
-            guard item.keyEquivalent.isEmpty || config.isRebound(action) else { continue }
+            let rebound = config.isRebound(action)
+            guard item.keyEquivalent.isEmpty || rebound else { continue }
+            // A ghostty default lends a key, it does not take one: ⌘, stays on
+            // Settings rather than following `open_config` to its item.
+            guard rebound || !worn.contains(shortcut) else { continue }
             item.keyEquivalent = shortcut.keyEquivalent
             item.keyEquivalentModifierMask = shortcut.modifiers
             claimed.insert(shortcut)

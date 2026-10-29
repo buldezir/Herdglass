@@ -139,7 +139,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         stack.setCustomSpacing(4, after: notifications)
         stack.setCustomSpacing(14, after: explanation)
         stack.setCustomSpacing(14, after: deniedRow)
-        stack.setCustomSpacing(4, after: installsUpdates)
+        // Only a release has the updates rows, and NSStackView raises for a
+        // view that is not in it — which AppKit swallows, so a local build's
+        // Settings… simply never opened.
+        if views.contains(installsUpdates) { stack.setCustomSpacing(4, after: installsUpdates) }
         for line in separators { stack.setCustomSpacing(16, after: line) }
         stack.translatesAutoresizingMaskIntoConstraints = false
 
