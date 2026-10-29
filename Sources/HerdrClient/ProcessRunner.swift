@@ -147,6 +147,62 @@ public enum ProcessRunner {
         public var combined: String { [stdout, stderr].filter { !$0.isEmpty }.joined(separator: "\n") }
     }
 
+    /// Start a program that is meant to outlive this app — a herdr server —
+    /// so that macOS does not count it as part of this app.
+    ///
+    /// On macOS 27 the Dock keeps a quit app's icon up, "running in the
+    /// background" (`exited-with-subordinates` to `lsappinfo`), while anything
+    /// that is still the app's lives, and for a server that is for ever. Three
+    /// things make a process the app's, and each needs its own way round:
+    ///
+    /// - A child joins the app's coalition and cannot leave it, and creating a
+    ///   coalition is privileged. launchd starts every job in one of its own,
+    ///   so the program is started by a launchd job, not by this app.
+    /// - LaunchServices also lists every job an app *loads* (`loadedJobs`) and
+    ///   holds the app until the job is gone, running or not. So the job is a
+    ///   launcher that backgrounds the program and boots itself out; with
+    ///   `AbandonProcessGroup` the program outlives it, in the job's coalition
+    ///   and a child of launchd. A unique label means no bootout can ever reach
+    ///   a server an earlier launch started.
+    /// - The environment of an app launched by LaunchServices names the app
+    ///   (`__CFBundleIdentifier`, `LaunchInstanceID`, `XPC_SERVICE_NAME`), and
+    ///   whatever the program starts would inherit that name; it is dropped.
+    ///
+    /// Returns false when launchd will not take the job, and the caller then
+    /// spawns the program itself. Whether the program came up is the caller's
+    /// to check.
+    public static func startOutsideThisApp(_ arguments: [String], environment: [String: String]) -> Bool {
+        let label = "dev.herdglass.launch.\(UUID().uuidString)"
+        let job = "gui/\(getuid())/\(label)"
+        var environment = environment
+        for key in ["__CFBundleIdentifier", "LaunchInstanceID", "XPC_SERVICE_NAME", "XPC_FLAGS"] {
+            environment[key] = nil
+        }
+        let plist: [String: Any] = [
+            "Label": label,
+            // `$1` is the job to boot out, the rest is the program as `$@`, so
+            // nothing is quoted.
+            "ProgramArguments": ["/bin/sh", "-c", #"job=$1; shift; "$@" & /bin/launchctl bootout "$job""#, "sh", job]
+                + arguments,
+            "EnvironmentVariables": environment,
+            "RunAtLoad": true,
+            "KeepAlive": false,
+            "AbandonProcessGroup": true,
+            "StandardInPath": "/dev/null",
+            "StandardOutPath": "/dev/null",
+            "StandardErrorPath": "/dev/null",
+        ]
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(label).plist")
+        guard
+            let data = try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0),
+            (try? data.write(to: file)) != nil
+        else { return false }
+        // launchd keeps its own copy once the job is loaded.
+        defer { try? FileManager.default.removeItem(at: file) }
+        return run(executable: "/bin/launchctl", arguments: ["bootstrap", "gui/\(getuid())", file.path], extraEnv: [:],
+                   inheritLoginPath: false, timeout: 5).terminationStatus == 0
+    }
+
     /// Run a command and collect its output.
     ///
     /// `timeout` is not optional decoration: this runs `ssh` for everything from

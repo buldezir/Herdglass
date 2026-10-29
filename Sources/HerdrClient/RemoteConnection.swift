@@ -124,14 +124,20 @@ public final class RemoteConnection: @unchecked Sendable {
         )
         if HerdrStatus.isRunning(from: status.stdout) { return }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: herdrBinary)
-        proc.arguments = sessionArgs + ["server"]
-        proc.standardInput = FileHandle.nullDevice
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        proc.environment = HerdrPaths.loginPathEnv()
-        try proc.run()
+        // The server outlives this app on purpose, and as a plain child it was
+        // still this app's as far as macOS is concerned: after ⌘Q the Dock kept
+        // Herdglass "running in the background" for as long as the server ran.
+        let arguments = [herdrBinary] + sessionArgs + ["server"]
+        if !ProcessRunner.startOutsideThisApp(arguments, environment: HerdrPaths.loginPathEnv()) {
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: herdrBinary)
+            proc.arguments = Array(arguments.dropFirst())
+            proc.standardInput = FileHandle.nullDevice
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            proc.environment = HerdrPaths.loginPathEnv()
+            try proc.run()
+        }
         // `openLocal` reports a better error than a bare timeout if this fails.
         try? waitForLocalSocket(localSocketPath, timeout: 3)
     }
