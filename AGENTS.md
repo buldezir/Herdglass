@@ -6,7 +6,7 @@ Rendering uses [libghostty](https://github.com/ghostty-org/ghostty), built by `S
 
 ## Layout
 
-- `Sources/HerdrClient/` — SSH attach, Unix JSON-RPC, `terminal session control` bridge, models, split-layout tree (`Layout.swift`)
+- `Sources/HerdrClient/` — SSH attach, Unix JSON-RPC, `terminal session control` bridge, the herdr release that bridge runs (`HerdrRelease.swift`), models, split-layout tree (`Layout.swift`)
 - `Sources/Herdglass/` — AppKit window, sidebar (hosts → spaces), tab strip, split container, connect sheet, Ghostty host view, ghostty-config reader (`GhosttyConfig.swift`), the chrome's type scale (`ChromeMetrics.swift`), the opt-in space keys (`SpaceKeys.swift`), the ⌘`/held-⌥⌘ spaces overlay (`SpaceSwitcher.swift`), settings window and macOS notifications (`AgentNotifications.swift`)
 - `Sources/Herdglass/Ghostty/` — the libghostty glue: `TerminalHost` (the `ghostty_app_t` and its callbacks), `TerminalSession` (one surface), `TerminalSurfaceView` (the `NSView` and its input)
 - `Tests/HerdrClientTests/` — parsing, framing, and RPC-transport tests
@@ -89,6 +89,7 @@ The first four interact. Read all four before touching `HerdrRPC` or `SessionCon
 - **`NSSplitView.dividerColor` has no setter.** `split-divider-color` is applied by overriding the property on `SplitNodeView`, which is how AppKit intends it; assigning to it does not compile.
 - Remote scripts must go to `ssh host bash -s` on **stdin**. Extra argv after the host is joined with spaces and executed by zsh, which splits on `;`.
 - `HERDR_SOCKET_PATH=.../herdr.sock` makes `herdr terminal session control` open `.../herdr-client.sock`. Forward both or control fails with "No such file or directory".
+- **A pane attaches with the server's own herdr release, not with whatever herdr is installed here.** The bridge's `herdr terminal session control` runs on *this* Mac and speaks herdr's private terminal protocol to the forwarded client socket (`protocol:` in `herdr status client`, `protocol` in `session.snapshot`). That protocol has to match the server's exactly, and herdr changes it between releases: 0.8 is 20, 0.9 is 22. Nothing else notices a mismatch. The API, the events and the snapshot all work, the server hangs up on the bridge's handshake (its log shows only a skipped `client_id`), and the window fills in around panes showing `herdr: lost connection to server: server closed connection`. That is how "Herdglass cannot connect to herdr 0.9" looked with a 0.8 herdr on the Mac, and no single install can fix it for a sidebar with 0.8 and 0.9 hosts in it. `HerdrPaths.terminalClient` therefore gives a remote host the release its snapshot reports, which `HerdrRelease` fetches from herdr's GitHub releases on first use into `~/Library/Application Support/Herdglass/herdr/<version>/herdr`. It checks the download against the SHA-256 GitHub publishes for the asset, checks that `status client` reports the right version, and renames it into place, so a bridge never starts a half-written binary. A cached copy that stops reporting its version is fetched again. The version comes from the server and becomes a path and a URL, so only a plain `x.y.z` is fetched (`onlyAPlainReleaseNumberIsFetched`); a preview build fails the connect with that reason, as does a release GitHub has no checksum for. The `local` host is the exception, because its server was started by an install here: the first install whose protocol matches is used (by protocol, not by `binaryCandidates` order — `anInstalledClientIsChosenByProtocolRatherThanByPath`), and the release is fetched only when none does, i.e. for a server left running across an upgrade. `--self-test` goes through the same choice. The alternative, running each host's own herdr through the SSH master, needs no download, but every bridge would then be an SSH *session*, and sshd refuses the 11th on one connection (`MaxSessions`, default 10), which is fewer than `maxWarmPanes` plus a split. Forwarded sockets do not count against it, which is why the bridges ride them.
 - Never `FileHandle.write` to a pipe that a child may have closed; EPIPE becomes an ObjC exception and `abort()`s. Use `writeIgnoringBrokenPipe` and keep `HerdrProcess.setUp()` (SIGPIPE ignored) on every entry point.
 - Never read a subprocess pipe only after `waitUntilExit()`; that deadlocks past the ~64 KB pipe buffer. `ProcessRunner` drains both streams concurrently — see `processRunnerSurvivesOutputLargerThanThePipeBuffer`.
 - `LineBuffer` yields `Data`, not `String`. A non-UTF-8 frame must not end the drain loop while complete records are still queued.
@@ -169,6 +170,13 @@ A config key that reads back as its default when the file clearly sets it is
 either unexposed by the C API (`ghostty_config_get` returned false) or being
 overridden by a theme loaded after it — check `ghostty +show-config` for what
 ghostty itself ended up with.
+
+`--self-test` prints the herdr it attaches with (`terminal client …`) and the
+server's protocol. For a remote host that is
+`~/Library/Application Support/Herdglass/herdr/<server version>/herdr`, and the
+first self-test against a new version downloads it. Delete the directory to
+watch a fetch happen again. `pgrep -fl 'terminal session control'` shows the
+same path for a running window's bridges.
 
 A pane showing a local shell prompt (rather than the remote pane's content)
 means the bridge never started. `pgrep -f 'Herdglass --bridge'` is empty and the

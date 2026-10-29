@@ -658,6 +658,92 @@ private let splitTreeJSON = """
     #expect(HerdrStatus.clientSocketPath(from: "/tmp/herdr") == "/tmp/herdr-client.sock")
 }
 
+// MARK: - Terminal client
+
+/// `protocol:` is the private terminal protocol a bridge attaches with;
+/// `endpoint_protocol_generation:` (0.9 on) is the public API's, and is not it.
+@Test func clientStatusReadsTheTerminalProtocol() {
+    let current = """
+    version: 0.9.5
+    channel: stable
+    protocol: 22
+    endpoint_protocol_generation: 1
+    binary: /opt/homebrew/bin/herdr
+    """
+    #expect(
+        HerdrStatus.client(at: "/opt/homebrew/bin/herdr", from: current)
+            == HerdrClientInfo(path: "/opt/homebrew/bin/herdr", version: "0.9.5", protocolVersion: 22)
+    )
+    let older = """
+    version: 0.8.2
+    channel: stable
+    protocol: 20
+    binary: /Users/sasha/.local/bin/herdr
+    """
+    #expect(HerdrStatus.client(at: "/Users/sasha/.local/bin/herdr", from: older).protocolVersion == 20)
+    #expect(HerdrStatus.client(at: "/usr/local/bin/herdr", from: "") == HerdrClientInfo(path: "/usr/local/bin/herdr"))
+}
+
+/// Herdr 0.9 moved the terminal protocol from 20 to 22, and a server on one
+/// hangs up on a bridge on the other. A stale install that comes first in the
+/// search order must not be the one that attaches the local server's panes
+/// when a current one exists.
+@Test func anInstalledClientIsChosenByProtocolRatherThanByPath() {
+    let installed = [
+        HerdrClientInfo(path: "/opt/homebrew/bin/herdr", version: "0.8.2", protocolVersion: 20),
+        HerdrClientInfo(path: "/Users/sasha/.local/bin/herdr", version: "0.9.5", protocolVersion: 22),
+    ]
+    #expect(HerdrPaths.matchingClient(serverProtocol: 22, among: installed) == "/Users/sasha/.local/bin/herdr")
+    #expect(HerdrPaths.matchingClient(serverProtocol: 20, among: installed) == "/opt/homebrew/bin/herdr")
+    // Nothing installed speaks it: the server's own release is fetched instead.
+    #expect(HerdrPaths.matchingClient(serverProtocol: 23, among: installed) == nil)
+    // A server too old to report a protocol has nothing to choose by.
+    #expect(HerdrPaths.matchingClient(serverProtocol: 0, among: installed) == "/opt/homebrew/bin/herdr")
+}
+
+/// The version comes from the server and becomes a directory and a URL.
+@Test func onlyAPlainReleaseNumberIsFetched() {
+    #expect(HerdrRelease.isFetchable("0.9.5"))
+    #expect(HerdrRelease.isFetchable("10.12.300"))
+    #expect(HerdrRelease.isFetchable("") == false)
+    #expect(HerdrRelease.isFetchable("0.9") == false)
+    #expect(HerdrRelease.isFetchable("0.9.5-preview") == false)
+    #expect(HerdrRelease.isFetchable("../../../bin") == false)
+    #expect(HerdrRelease.isFetchable("0.9.5/../../x") == false)
+}
+
+@Test func aReleaseAssetComesWithTheChecksumGitHubPublishes() throws {
+    func release(_ asset: String) -> Data {
+        Data((#"{"tag_name":"v0.9.5","assets":[{"name":"herdr-linux-x86_64"},"# + asset + "]}").utf8)
+    }
+    let digest = "fb77c2232a05a8035421382c894392f4174e4e38a18e48af3dd0290157c3a7e2"
+    let found = try HerdrRelease.asset(
+        named: "herdr-macos-aarch64",
+        inRelease: release(#"""
+        {"name":"herdr-macos-aarch64",
+         "browser_download_url":"https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-macos-aarch64",
+         "digest":"sha256:\#(digest.uppercased())"}
+        """#)
+    )
+    #expect(found.url.absoluteString == "https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-macos-aarch64")
+    #expect(found.sha256 == digest)
+
+    // Nothing unchecked gets run, and nothing fetched in the clear.
+    #expect(throws: HerdrRPCError.self) {
+        try HerdrRelease.asset(named: "herdr-macos-aarch64", inRelease: release(#"""
+        {"name":"herdr-macos-aarch64","browser_download_url":"https://example.com/herdr"}
+        """#))
+    }
+    #expect(throws: HerdrRPCError.self) {
+        try HerdrRelease.asset(named: "herdr-macos-aarch64", inRelease: release(#"""
+        {"name":"herdr-macos-aarch64","browser_download_url":"http://example.com/herdr","digest":"sha256:\#(digest)"}
+        """#))
+    }
+    #expect(throws: HerdrRPCError.self) {
+        try HerdrRelease.asset(named: "herdr-macos-aarch64", inRelease: release(#"{"name":"herdr-macos-x86_64"}"#))
+    }
+}
+
 // MARK: - Framing
 
 @Test func lineBufferSplitsOnNewlines() {

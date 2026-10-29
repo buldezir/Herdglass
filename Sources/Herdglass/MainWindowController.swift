@@ -871,6 +871,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard
             let session,
             let socketPath = session.socketPath,
+            let herdrBinary = session.herdrBinary,
             let tabId = session.selectedTabId,
             !session.panes(inTab: tabId).isEmpty
         else {
@@ -890,7 +891,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 unreadPaneIds: session.unreadPaneIds,
                 attachment: PaneAttachment(
                     socketPath: socketPath,
-                    herdrBinary: session.herdrBinary,
+                    herdrBinary: herdrBinary,
                     executablePath: Bundle.main.executableURL?.path ?? CommandLine.arguments[0]
                 ),
                 // Panes stay warm across tabs and spaces, but not across hosts:

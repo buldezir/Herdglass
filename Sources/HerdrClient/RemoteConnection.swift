@@ -306,6 +306,20 @@ public final class RemoteConnection: @unchecked Sendable {
     }
 }
 
+/// One herdr installed on this Mac, as `herdr status client` describes it.
+public struct HerdrClientInfo: Equatable, Sendable {
+    public var path: String
+    public var version: String?
+    /// The private terminal protocol it attaches with; nil when it would not say.
+    public var protocolVersion: UInt32?
+
+    public init(path: String, version: String? = nil, protocolVersion: UInt32? = nil) {
+        self.path = path
+        self.version = version
+        self.protocolVersion = protocolVersion
+    }
+}
+
 public enum HerdrStatus {
     /// Whether `herdr status server` reports a live server.
     ///
@@ -333,6 +347,23 @@ public enum HerdrStatus {
             if path.hasPrefix("/") { return path }
         }
         return nil
+    }
+
+    /// What `herdr status client` says about the binary it ran from. The
+    /// `protocol:` line is the private terminal protocol; it is not to be
+    /// confused with `endpoint_protocol_generation:`, which is the public API's.
+    public static func client(at path: String, from status: String) -> HerdrClientInfo {
+        var info = HerdrClientInfo(path: path)
+        for line in status.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("version:") {
+                let value = trimmed.dropFirst("version:".count).trimmingCharacters(in: .whitespaces)
+                if !value.isEmpty { info.version = value }
+            } else if trimmed.hasPrefix("protocol:") {
+                info.protocolVersion = UInt32(trimmed.dropFirst("protocol:".count).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        return info
     }
 
     /// Herdr's direct-attach socket sits beside the API socket.

@@ -14,16 +14,79 @@ public enum HerdrPaths {
     ]
 
     public static func localHerdrBinary() -> String {
+        localHerdrBinaries().first ?? "/opt/homebrew/bin/herdr"
+    }
+
+    /// Every herdr installed on this Mac, in `binaryCandidates` order and once
+    /// each: the Homebrew symlink and the Cellar binary behind it are one
+    /// install, not two.
+    public static func localHerdrBinaries() -> [String] {
         let fm = FileManager.default
+        var seen: Set<String> = []
+        var found: [String] = []
         for candidate in binaryCandidates {
             let path = (candidate as NSString).expandingTildeInPath
-            if fm.isExecutableFile(atPath: path) { return path }
+            guard fm.isExecutableFile(atPath: path) else { continue }
+            // Keep the path as found: a mise shim resolves to `mise` itself and
+            // only works when run under its own name.
+            if seen.insert(URL(fileURLWithPath: path).resolvingSymlinksInPath().path).inserted {
+                found.append(path)
+            }
         }
-        let found = ProcessRunner.run(executable: "/usr/bin/which", arguments: ["herdr"], extraEnv: [:])
-            .stdout
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !found.isEmpty { return found }
-        return "/opt/homebrew/bin/herdr"
+        if found.isEmpty {
+            let which = ProcessRunner.run(executable: "/usr/bin/which", arguments: ["herdr"], extraEnv: [:])
+                .stdout
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !which.isEmpty { found.append(which) }
+        }
+        return found
+    }
+
+    /// The herdr that attaches the panes of the server that sent `snapshot`;
+    /// `host` is the host's display name, or nil for the server on this Mac.
+    ///
+    /// Attaching is `herdr terminal session control`, which speaks herdr's
+    /// *private* terminal protocol to the server's client socket, and that has
+    /// to match the server's exactly — herdr 0.8 speaks 20 and 0.9 speaks 22.
+    /// A mismatch fails nowhere the API can see: the snapshot, the events and
+    /// every request work, the server hangs up on the bridge's handshake, and
+    /// the window fills in around panes that never draw.
+    ///
+    /// So a remote host attaches with its own release (`HerdrRelease`), never
+    /// with whatever is installed here — one install cannot match a 0.8 host
+    /// and a 0.9 host at once. The server on this Mac was started by a herdr
+    /// installed here, so one of those normally speaks its protocol already;
+    /// its release is only fetched for a server left running across an upgrade.
+    public static func terminalClient(for snapshot: SessionSnapshot, host: String?) throws -> String {
+        if host == nil {
+            let installed = localHerdrBinaries().map { path in
+                let status = ProcessRunner.run(executable: path, arguments: ["status", "client"], extraEnv: [:], timeout: 5)
+                return HerdrStatus.client(at: path, from: status.terminationStatus == 0 ? status.stdout : "")
+            }
+            if let match = matchingClient(serverProtocol: snapshot.protocolVersion, among: installed) {
+                return match
+            }
+        }
+        do {
+            return try HerdrRelease.binary(version: snapshot.version)
+        } catch {
+            let server = host.map { "\($0) runs herdr \(snapshot.version)" }
+                ?? "The herdr server on this Mac is \(snapshot.version)"
+            throw HerdrRPCError(
+                code: "herdr_client",
+                message: "\(server). Herdglass attaches to its panes with that same release, "
+                    + "and could not get it: \(error.localizedDescription)."
+            )
+        }
+    }
+
+    /// The first install that speaks `serverProtocol` — by protocol, not by
+    /// which path comes first, because a stale Homebrew herdr ahead of a
+    /// current `~/.local/bin` one is exactly the trap. A server too old to
+    /// report its protocol (0) leaves nothing to choose by.
+    public static func matchingClient(serverProtocol: UInt32, among installed: [HerdrClientInfo]) -> String? {
+        guard serverProtocol != 0 else { return installed.first?.path }
+        return installed.first { $0.protocolVersion == serverProtocol }?.path
     }
 
     public static func loginPathEnv() -> [String: String] {

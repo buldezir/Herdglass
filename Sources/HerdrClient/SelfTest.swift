@@ -19,13 +19,17 @@ public enum SelfTest {
             for workspace in snap.workspaces {
                 fputs("  workspace \(workspace.workspaceId) \(workspace.label) \(workspace.agentStatus.rawValue)\n", stderr)
             }
+            // The app's choice, so a herdr that cannot speak to this server
+            // fails here the way it fails a connect.
+            let client = try HerdrPaths.terminalClient(for: snap, host: target.isLocal ? nil : target.displayName)
+            fputs("terminal client \(client) (server protocol \(snap.protocolVersion))\n", stderr)
             guard let paneId = snap.focusedPaneId ?? snap.panes.first?.paneId else {
                 fputs("FAIL: no panes\n", stderr)
                 conn.close()
                 exit(1)
             }
             fputs("control \(paneId)\n", stderr)
-            try probeControl(paneId: paneId, socketPath: conn.localSocketPath, herdrBinary: conn.herdrBinary)
+            try probeControl(paneId: paneId, socketPath: conn.localSocketPath, herdrBinary: client)
             conn.close()
             fputs("OK\n", stderr)
         } catch {

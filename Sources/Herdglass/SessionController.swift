@@ -53,6 +53,9 @@ final class SessionController {
     private(set) var state: State = .disconnected
     private(set) var unreadPaneIds: Set<String> = []
     private(set) var socketPath: String?
+    /// The herdr that attaches this host's panes: the server's own release, or
+    /// for `local` an install that speaks its protocol (`HerdrPaths.terminalClient`).
+    private(set) var herdrBinary: String?
     /// Split trees, one per tab, each remembered with the layout signature it
     /// was fetched for. A tree outlives leaving its tab: coming back to a tab
     /// that has to guess at a single pane first, and re-split a round trip
@@ -171,8 +174,6 @@ final class SessionController {
     /// at the rate the terminal writes.
     private static let minimumSnapshotInterval: TimeInterval = 0.2
 
-    let herdrBinary = HerdrPaths.localHerdrBinary()
-
     var hasAttention: Bool { !unreadPaneIds.isEmpty }
 
     // MARK: - Connection
@@ -210,30 +211,36 @@ final class SessionController {
 
         connectGeneration += 1
         let generation = connectGeneration
-        let binary = herdrBinary
         pendingConnect = completion
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let outcome: Result<(RemoteConnection, HerdrRPC, SessionSnapshot), Error>
+            let outcome: Result<(RemoteConnection, HerdrRPC, SessionSnapshot, String), Error>
             do {
-                let connection = try RemoteConnection(target: target, herdrBinary: binary)
+                let connection = try RemoteConnection(target: target)
                 try connection.open()
                 let rpc = HerdrRPC(socketPath: connection.localSocketPath)
-                outcome = .success((connection, rpc, try rpc.snapshot()))
+                let snapshot = try rpc.snapshot()
+                // Before the window fills in: a host whose panes nothing here
+                // can attach to is a failed connect, not a window of blank panes.
+                let client = try HerdrPaths.terminalClient(
+                    for: snapshot,
+                    host: target.isLocal ? nil : target.displayName
+                )
+                outcome = .success((connection, rpc, snapshot, client))
             } catch {
                 outcome = .failure(error)
             }
             DispatchQueue.main.async {
                 guard let self, generation == self.connectGeneration else {
                     // A newer connect (or a disconnect) superseded this one.
-                    if case .success(let (connection, _, _)) = outcome { connection.close() }
+                    if case .success(let (connection, _, _, _)) = outcome { connection.close() }
                     return
                 }
                 let reportOutcome = self.pendingConnect
                 self.pendingConnect = nil
                 switch outcome {
-                case .success(let (connection, rpc, snapshot)):
-                    self.finishConnect(connection: connection, rpc: rpc, snapshot: snapshot)
+                case .success(let (connection, rpc, snapshot, client)):
+                    self.finishConnect(connection: connection, rpc: rpc, snapshot: snapshot, herdrBinary: client)
                     reportOutcome?(nil)
                 case .failure(let error):
                     self.state = .failed(error.localizedDescription)
@@ -270,6 +277,7 @@ final class SessionController {
         pendingTabId = nil
         pendingPaneId = nil
         socketPath = nil
+        herdrBinary = nil
         // The record in defaults survives — that is what it is for — but the
         // *pending* one must not: a reconnect asks for it again from scratch.
         restoring = nil
@@ -646,10 +654,16 @@ final class SessionController {
 
     // MARK: - Internals
 
-    private func finishConnect(connection: RemoteConnection, rpc: HerdrRPC, snapshot: SessionSnapshot) {
+    private func finishConnect(
+        connection: RemoteConnection,
+        rpc: HerdrRPC,
+        snapshot: SessionSnapshot,
+        herdrBinary: String
+    ) {
         self.connection = connection
         self.rpc = rpc
         socketPath = connection.localSocketPath
+        self.herdrBinary = herdrBinary
         state = .connected(connection.target.displayName)
         RecentsStore.remember(connection.target)
         // Attached now, so attached at the next launch: the list of hosts to
