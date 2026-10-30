@@ -45,19 +45,33 @@ public enum HerdrPaths {
     /// The herdr that attaches the panes of the server that sent `snapshot`;
     /// `host` is the host's display name, or nil for the server on this Mac.
     ///
+    /// None for a server older than 0.9 (`HerdrRelease.isSupported`): that is
+    /// refused here, where both a connect and `--self-test` ask before the
+    /// window fills in, rather than half-attached.
+    ///
     /// Attaching is `herdr terminal session control`, which speaks herdr's
     /// *private* terminal protocol to the server's client socket, and that has
-    /// to match the server's exactly — herdr 0.8 speaks 20 and 0.9 speaks 22.
+    /// to match the server's exactly — herdr 0.8 spoke 20 and 0.9 speaks 22.
     /// A mismatch fails nowhere the API can see: the snapshot, the events and
     /// every request work, the server hangs up on the bridge's handshake, and
     /// the window fills in around panes that never draw.
     ///
     /// So a remote host attaches with its own release (`HerdrRelease`), never
-    /// with whatever is installed here — one install cannot match a 0.8 host
-    /// and a 0.9 host at once. The server on this Mac was started by a herdr
+    /// with whatever is installed here — one install cannot match hosts on two
+    /// releases at once. The server on this Mac was started by a herdr
     /// installed here, so one of those normally speaks its protocol already;
     /// its release is only fetched for a server left running across an upgrade.
     public static func terminalClient(for snapshot: SessionSnapshot, host: String?) throws -> String {
+        guard HerdrRelease.isSupported(snapshot.version) else {
+            let running = snapshot.version.isEmpty ? "a herdr that reports no version" : "herdr \(snapshot.version)"
+            let server = host.map { "\($0) runs \(running)" } ?? "The herdr server on this Mac is \(running)"
+            let minimum = HerdrRelease.minimumVersion
+            throw HerdrRPCError(
+                code: "herdr_unsupported",
+                message: "\(server). Herdglass needs herdr \(minimum.major).\(minimum.minor) or newer: "
+                    + "upgrade it, restart the server (`herdr server stop`), and connect again."
+            )
+        }
         if host == nil {
             let installed = localHerdrBinaries().map { path in
                 let status = ProcessRunner.run(executable: path, arguments: ["status", "client"], extraEnv: [:], timeout: 5)
@@ -82,11 +96,9 @@ public enum HerdrPaths {
 
     /// The first install that speaks `serverProtocol` — by protocol, not by
     /// which path comes first, because a stale Homebrew herdr ahead of a
-    /// current `~/.local/bin` one is exactly the trap. A server too old to
-    /// report its protocol (0) leaves nothing to choose by.
+    /// current `~/.local/bin` one is exactly the trap.
     public static func matchingClient(serverProtocol: UInt32, among installed: [HerdrClientInfo]) -> String? {
-        guard serverProtocol != 0 else { return installed.first?.path }
-        return installed.first { $0.protocolVersion == serverProtocol }?.path
+        installed.first { $0.protocolVersion == serverProtocol }?.path
     }
 
     public static func loginPathEnv() -> [String: String] {

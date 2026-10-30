@@ -46,8 +46,8 @@ import Testing
 @Test func decodeSnapshot() throws {
     let json = """
     {
-      "version": "0.8.2",
-      "protocol": 20,
+      "version": "0.9.5",
+      "protocol": 22,
       "focused_pane_id": "w4:p1",
       "focused_tab_id": "w4:t1",
       "focused_workspace_id": "w4",
@@ -70,7 +70,7 @@ import Testing
     let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
     #expect(snapshot.workspaces.first?.agentStatus == .blocked)
     #expect(snapshot.panes.first?.displayName == "codex")
-    #expect(snapshot.protocolVersion == 20)
+    #expect(snapshot.protocolVersion == 22)
 }
 
 @Test func paneDisplayNameFallsBackThroughTitles() throws {
@@ -146,7 +146,7 @@ private func titleSnapshot(
     """
     let json = """
     {
-      "version": "0.8.2", "protocol": 20,
+      "version": "0.9.5", "protocol": 22,
       "workspaces": [{
         "workspace_id": "w8", "number": 3, "label": "\(workspaceLabel)", "focused": true,
         "pane_count": 1, "tab_count": 1, "active_tab_id": "w8:t1", "agent_status": "idle",
@@ -279,7 +279,7 @@ private let gappyPanes = """
 @Test func spacesComeBackInHerdrsOwnOrder() throws {
     let json = """
     {
-      "version": "0.8.2", "protocol": 20,
+      "version": "0.9.5", "protocol": 22,
       "workspaces": [
         {"workspace_id": "wc", "number": 3, "label": "c", "focused": false,
          "pane_count": 0, "tab_count": 0, "active_tab_id": "wc:t1", "agent_status": "idle"},
@@ -313,7 +313,7 @@ private let gappyPanes = """
         """
     }
     let json = """
-    {"version": "0.8.2", "protocol": 20, "workspaces": [\(workspaces.reversed().joined(separator: ","))],
+    {"version": "0.9.5", "protocol": 22, "workspaces": [\(workspaces.reversed().joined(separator: ","))],
      "tabs": [], "panes": [], "agents": []}
     """
     let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
@@ -338,7 +338,7 @@ private let gappyPanes = """
             """
         }
         let json = """
-        {"version": "0.8.2", "protocol": 20, "workspaces": [\(workspaces.joined(separator: ","))],
+        {"version": "0.9.5", "protocol": 22, "workspaces": [\(workspaces.joined(separator: ","))],
          "tabs": [], "panes": [], "agents": []}
         """
         return try JSONDecoder().decode(SessionSnapshot.self, from: Data(json.utf8))
@@ -496,7 +496,7 @@ private let splitTreeJSON = """
 @Test func snapshotCarriesPerTabLayoutsAndSignsThem() throws {
     let json = """
     {
-      "version": "0.8.2", "protocol": 20,
+      "version": "0.9.5", "protocol": 22,
       "focused_pane_id": "w4:p1", "focused_tab_id": "w4:t1", "focused_workspace_id": "w4",
       "workspaces": [{
         "workspace_id": "w4", "number": 1, "label": "~", "focused": true,
@@ -542,7 +542,7 @@ private let splitTreeJSON = """
 }
 
 @Test func snapshotToleratesAServerThatOmitsLayouts() throws {
-    // 0.8.2 sends `layouts`, but a snapshot without it is still a snapshot; the
+    // herdr sends `layouts`, but a snapshot without it is still a snapshot; the
     // GUI falls back to a single pane rather than failing to decode.
     let snapshot = try JSONDecoder().decode(SessionSnapshot.self, from: Data(emptySnapshotJSON.utf8))
     #expect(snapshot.layouts.isEmpty)
@@ -620,7 +620,7 @@ private let splitTreeJSON = """
 @Test func parseHerdrStatusSocket() {
     let status = """
     status: running
-    version: 0.8.2
+    version: 0.9.5
     socket: /Users/sasha/.config/herdr/herdr.sock
     """
     #expect(HerdrStatus.socketPath(from: status) == "/Users/sasha/.config/herdr/herdr.sock")
@@ -634,7 +634,7 @@ private let splitTreeJSON = """
 @Test func serverIsRunningOnlyWhenTheStatusLineSaysSo() {
     let running = """
     status: running
-    version: 0.8.2
+    version: 0.9.5
     socket: /Users/sasha/.config/herdr/herdr.sock
     """
     #expect(HerdrStatus.isRunning(from: running))
@@ -694,11 +694,40 @@ private let splitTreeJSON = """
         HerdrClientInfo(path: "/Users/sasha/.local/bin/herdr", version: "0.9.5", protocolVersion: 22),
     ]
     #expect(HerdrPaths.matchingClient(serverProtocol: 22, among: installed) == "/Users/sasha/.local/bin/herdr")
-    #expect(HerdrPaths.matchingClient(serverProtocol: 20, among: installed) == "/opt/homebrew/bin/herdr")
     // Nothing installed speaks it: the server's own release is fetched instead.
     #expect(HerdrPaths.matchingClient(serverProtocol: 23, among: installed) == nil)
-    // A server too old to report a protocol has nothing to choose by.
-    #expect(HerdrPaths.matchingClient(serverProtocol: 0, among: installed) == "/opt/homebrew/bin/herdr")
+    #expect(HerdrPaths.matchingClient(serverProtocol: 0, among: installed) == nil)
+}
+
+/// 0.9 and newer, previews of those included; a version that does not start
+/// with a release number cannot be placed.
+@Test func onlyHerdrNineOrNewerIsSupported() {
+    #expect(HerdrRelease.isSupported("0.9.0"))
+    #expect(HerdrRelease.isSupported("0.9.5"))
+    #expect(HerdrRelease.isSupported("0.9.5-preview"))
+    #expect(HerdrRelease.isSupported("0.10.0"))
+    #expect(HerdrRelease.isSupported("1.0.0"))
+    #expect(HerdrRelease.isSupported("0.8.2") == false)
+    #expect(HerdrRelease.isSupported("0.1.0") == false)
+    #expect(HerdrRelease.isSupported("") == false)
+    #expect(HerdrRelease.isSupported("dev") == false)
+}
+
+/// A server before 0.9 fails the connect, before any herdr is looked for or
+/// fetched, and says what to do about it.
+@Test func aServerBeforeNineIsRefusedRatherThanAttached() throws {
+    let snapshot = try JSONDecoder().decode(
+        SessionSnapshot.self,
+        from: Data(#"{"version":"0.8.2","protocol":20,"workspaces":[],"tabs":[],"panes":[],"agents":[]}"#.utf8)
+    )
+    #expect {
+        try HerdrPaths.terminalClient(for: snapshot, host: "workbox")
+    } throws: { error in
+        let error = error as? HerdrRPCError
+        return error?.code == "herdr_unsupported"
+            && error?.message.contains("workbox runs herdr 0.8.2") == true
+            && error?.message.contains("0.9 or newer") == true
+    }
 }
 
 /// The version comes from the server and becomes a directory and a URL.
@@ -888,7 +917,7 @@ private final class OneShotJSONServer: @unchecked Sendable {
 }
 
 private let emptySnapshotJSON = """
-{"version":"0.8.2","protocol":20,"workspaces":[],"tabs":[],"panes":[],"agents":[]}
+{"version":"0.9.5","protocol":22,"workspaces":[],"tabs":[],"panes":[],"agents":[]}
 """
 
 @Test func repeatedRequestsSurviveAServerThatHangsUpEachTime() throws {
@@ -904,7 +933,7 @@ private let emptySnapshotJSON = """
 
     let rpc = HerdrRPC(socketPath: server.path)
     for _ in 1...3 {
-        #expect(try rpc.snapshot().protocolVersion == 20)
+        #expect(try rpc.snapshot().protocolVersion == 22)
     }
     #expect(server.requestsServed == 3)
 }

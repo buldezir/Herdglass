@@ -18,7 +18,7 @@ Herdr remains the multiplexer; this app does not reimplement panes, agents, or l
 ## Requirements
 
 - macOS 14+, Apple Silicon (libghostty is built for the host, so arm64 here)
-- Local `herdr` on `PATH` (tested with 0.8.2)
+- herdr 0.9 or newer on every host, `local` included (tested with 0.9.5). An older server is refused at connect, with a note to upgrade it and restart it
 - For remote hosts: working OpenSSH (`ssh <host>` already succeeds) and the key loaded in `ssh-agent` (`ssh-add -l`)
 - To build libghostty: Xcode, its Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`, ~700 MB, once per Xcode) and the ghostty checkout. Zig is downloaded for you at the version ghostty pins.
 
@@ -181,7 +181,7 @@ an icon on macOS 14 and 15, where nothing masks it.
 5. Renders every pane of the selected tab by spawning one `Herdglass --bridge --target <pane> …` per pane, each running `herdr terminal session control <pane> --takeover` and copying `terminal.frame` ANSI bytes into libghostty
 6. Reads the tab's split tree from `layout.export` and builds it out of nested split views; dragging a divider sends `layout.set_split_ratio`
 
-Frame / control JSON (Herdr 0.8.2):
+Frame / control JSON (Herdr 0.9):
 
 - `{ "type": "terminal.frame", "bytes": "<base64>", "encoding": "ansi", "full": true, "width": 80, "height": 24, "seq": 1 }`
 - `{ "type": "terminal.input", "bytes": "<base64>" }` or `{ "type": "terminal.input", "text": "..." }` (not both)

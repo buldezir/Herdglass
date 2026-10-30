@@ -8,7 +8,7 @@ import Foundation
 ///
 /// Attaching is `herdr terminal session control`, which speaks herdr's private
 /// terminal protocol to the server, and that has to match the server's exactly
-/// (0.8 speaks 20, 0.9 speaks 22). The one herdr certain to speak a server's
+/// (0.8 spoke 20, 0.9 speaks 22). The one herdr certain to speak a server's
 /// protocol is that server's own release. Whatever is installed on this Mac is
 /// not: it is one version, and the hosts in the sidebar can be on several.
 public enum HerdrRelease {
@@ -27,6 +27,19 @@ public enum HerdrRelease {
     /// a preview build, or a server sending `../..` — is refused, not fetched.
     public static func isFetchable(_ version: String) -> Bool {
         version.wholeMatch(of: #/\d+\.\d+\.\d+/#) != nil
+    }
+
+    /// The oldest herdr whose server Herdglass connects to, as major and minor.
+    public static let minimumVersion = (major: 0, minor: 9)
+
+    /// Whether a server on `version` is one Herdglass connects to: 0.9 or
+    /// newer, preview builds of those included. A version that does not start
+    /// with a release number cannot be placed, and is refused with the rest.
+    public static func isSupported(_ version: String) -> Bool {
+        guard let match = version.prefixMatch(of: #/(\d+)\.(\d+)/#),
+              let major = Int(match.1), let minor = Int(match.2)
+        else { return false }
+        return (major, minor) >= minimumVersion
     }
 
     public static var cacheDirectory: URL {
