@@ -686,22 +686,40 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     @objc func selectNextSpace() { step(spacesBy: 1) }
     @objc func selectPreviousSpace() { step(spacesBy: -1) }
 
-    /// Every attached host's spaces, in sidebar order, as one list. Both ways
-    /// of reaching a space read it: ⌥⌘↑/↓ step along it and ⌥⌘1…⌥⌘9 index into
-    /// it, so the ninth row down the sidebar is the ninth row down the sidebar
-    /// whichever way you go at it.
+    /// Every attached host's spaces, in sidebar order, as one list, collapsed
+    /// hosts included. The overlay shows this one: it is where you go to look
+    /// for a space, and folding a host out of the sidebar's way is not saying
+    /// its spaces cannot be the one you are looking for.
     ///
     /// A host that is remembered but not attached has no spaces and so is
     /// simply not in the list: stepping or counting past it must not dial it,
-    /// the way selecting its row would. Nor is a host the user has collapsed
-    /// in the sidebar: its spaces are rows nobody can see, and a hidden row
+    /// the way selecting its row would.
+    private var attachedSpaces: [(host: String, space: String)] {
+        connections.connections.flatMap { connection in
+            connection.session.spaces.map { (host: connection.id, space: $0.workspaceId) }
+        }
+    }
+
+    /// The spaces the keys reach: ⌥⌘↑/↓ step along this and ⌥⌘1…⌥⌘9 index
+    /// into it, so the ninth row down the sidebar is the ninth row down the
+    /// sidebar whichever way you go at it. `attachedSpaces` less the hosts the
+    /// user has collapsed, whose spaces are rows nobody can see — a hidden row
     /// holding ⌥⌘1 put every space that *is* on screen a key further away.
     private var orderedSpaces: [(host: String, space: String)] {
-        connections.connections.flatMap { connection in
-            sidebar.collapsedHosts.contains(connection.id)
-                ? []
-                : connection.session.spaces.map { (host: connection.id, space: $0.workspaceId) }
+        attachedSpaces.filter { !sidebar.collapsedHosts.contains($0.host) }
+    }
+
+    /// Each reachable space's key, 1…9, by sidebar row id: the first nine of
+    /// `orderedSpaces`. The sidebar's hints and the overlay's digits both read
+    /// it, so the nth hint and the nth key are one row by construction, and a
+    /// number on a tile names the same space as that number in the sidebar. A
+    /// collapsed host's spaces have none, in the sidebar or on a tile.
+    private var spaceKeyPositions: [String: Int] {
+        var positions: [String: Int] = [:]
+        for (index, target) in orderedSpaces.enumerated() where SpaceKeys.positions.contains(index + 1) {
+            positions[Self.spaceRowId(target.host, target.space)] = index + 1
         }
+        return positions
     }
 
     /// Where the window is along `spaces`, which must be in sidebar order. Off
@@ -720,10 +738,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return .between(spaces.prefix { above.contains($0.host) }.count)
     }
 
-    /// Whether ⌥⌘↑/↓ and the overlay have anywhere to go: a listed space that
-    /// is not the one on screen.
-    private var canWalkSpaces: Bool {
-        let spaces = orderedSpaces
+    /// Whether a walk along `spaces` has anywhere to go: a listed space that is
+    /// not the one on screen.
+    private func canWalk(_ spaces: [(host: String, space: String)]) -> Bool {
         if case .tile = walkOrigin(in: spaces) { return spaces.count > 1 }
         return !spaces.isEmpty
     }
@@ -916,8 +933,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return session?.selectedPaneId != nil
         case #selector(selectNextTab), #selector(selectPreviousTab):
             return (session?.tabsInSelectedSpace.count ?? 0) > 1
-        case #selector(selectNextSpace), #selector(selectPreviousSpace), #selector(showSpaceSwitcher(_:)):
-            return canWalkSpaces
+        case #selector(selectNextSpace), #selector(selectPreviousSpace):
+            return canWalk(orderedSpaces)
+        case #selector(showSpaceSwitcher(_:)):
+            return canWalk(attachedSpaces)
         default:
             return true
         }
@@ -1094,17 +1113,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         var model = SidebarModel()
         // Asked once for the whole sidebar, so the setting cannot change halfway
         // down it and leave the hints starting at 4.
-        let spaceKeys = SpaceKeys.isEnabled
-        // The hints are read off `orderedSpaces`, the list the keys index, so
-        // the nth hint and the nth key are the same row by construction rather
-        // than by two rules agreeing — about hosts with no spaces, and about
-        // collapsed hosts, whose spaces draw no hint and take no number.
-        var positions: [String: Int] = [:]
-        if spaceKeys {
-            for (index, target) in orderedSpaces.enumerated() where SpaceKeys.positions.contains(index + 1) {
-                positions[Self.spaceRowId(target.host, target.space)] = index + 1
-            }
-        }
+        let positions = SpaceKeys.isEnabled ? spaceKeyPositions : [:]
         for connection in connections.connections {
             let session = connection.session
             let unread = session.unreadPaneIds.count
@@ -1178,13 +1187,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Space switcher model
 
-    /// The switcher's tiles: `orderedSpaces` again, which is what makes the
+    /// The switcher's tiles: `attachedSpaces`, which is what makes the
     /// overlay's order, the sidebar's order and the order ⌥⌘↑/↓ walk the same
-    /// order by construction rather than by three rules agreeing. A space that
-    /// has gone between the walk and the lookup is simply not a tile.
+    /// order by construction rather than by three rules agreeing. The overlay
+    /// has a tile for a collapsed host's spaces, which the walk steps over, and
+    /// its digits are the sidebar's (`spaceKeyPositions`). A space that has gone
+    /// between the walk and the lookup is simply not a tile.
     private func switcherItems() -> (items: [SpaceSwitcherModel.Item], origin: SpaceSwitcherModel.Origin) {
         let selectedSpace = connections.selectedSession?.selectedSpace?.workspaceId
-        let items = orderedSpaces.enumerated().compactMap { index, target -> SpaceSwitcherModel.Item? in
+        let positions = spaceKeyPositions
+        let items = attachedSpaces.compactMap { target -> SpaceSwitcherModel.Item? in
             guard
                 let connection = connections.connection(id: target.host),
                 let space = connection.session.spaces.first(where: { $0.workspaceId == target.space })
@@ -1201,7 +1213,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                 status: session.effectiveStatus(ofSpace: space),
                 unread: unread > 0,
                 badge: unread,
-                digit: SpaceKeys.positions.contains(index + 1) ? "\(index + 1)" : nil,
+                digit: positions[Self.spaceRowId(connection.id, space.workspaceId)],
                 current: connection.id == connections.selectedConnectionId
                     && space.workspaceId == selectedSpace
             )

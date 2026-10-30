@@ -55,6 +55,11 @@ struct SidebarModel {
     func isHost(_ id: String) -> Bool {
         hosts.contains { $0.id == id }
     }
+
+    /// The host a space row sits under.
+    func host(ofSpace id: String) -> String? {
+        spaces.first { $0.value.contains { $0.id == id } }?.key
+    }
 }
 
 /// Keep a context menu tied to the row that opened it, even if a snapshot
@@ -284,10 +289,17 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
             outline.deselectAll(nil)
             return
         }
-        guard current != selectedId else { return }
-        let row = outline.row(forItem: selectedId)
+        // A space under a collapsed host has no row — the overlay lands on
+        // those, and the window can be showing one when its host is folded
+        // away — so the host's row stands in for it, which is where the user
+        // put it. Expanding the host moves the selection down onto the space.
+        let target = outline.row(forItem: selectedId) >= 0
+            ? selectedId
+            : model.host(ofSpace: selectedId) ?? selectedId
+        guard current != target else { return }
+        let row = outline.row(forItem: target)
         guard row >= 0 else { return }
-        appliedSelectionId = selectedId
+        appliedSelectionId = target
         outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         outline.scrollRowToVisible(row)
     }
@@ -423,7 +435,18 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     }
 
     private func reportSelection(source: SelectionSource) {
-        guard let id = selectedRowId else { return }
+        guard let id = selectedRowId else {
+            // Collapsing a host takes the selection with the row it hides, and
+            // says so as an empty selection, after `itemDidCollapse`. That is
+            // not the user deselecting, and left alone it reads as a selection
+            // the user made, which `syncSelection` then never overrides: take
+            // it as ours so the host row can stand in for the space.
+            if let applied = appliedSelectionId, outline.row(forItem: applied) < 0 {
+                appliedSelectionId = nil
+                syncSelection()
+            }
+            return
+        }
         // Our own `syncSelection` echoes back through here; only a row the user
         // moved to is news for the window.
         guard id != appliedSelectionId else { return }

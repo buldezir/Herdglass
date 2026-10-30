@@ -29,14 +29,16 @@ struct SpaceSwitcherModel {
         var unread = false
         var badge = 0
         /// The digit that jumps the highlight to this tile, on the tiles a digit
-        /// reaches and nowhere else — the same rule the sidebar's hints follow.
+        /// reaches and nowhere else — the same rule the sidebar's hints follow,
+        /// and the same numbers. A collapsed host's spaces are tiles here but
+        /// take no digit, so the tiles' numbers can skip the way the sidebar's do.
         ///
         /// Drawn whether or not Settings has turned ⌥⌘1…⌥⌘9 on, because the
         /// setting buys back nine chords the terminal would otherwise not see
         /// and nine numbers on a sidebar that is always on screen. Neither is
         /// spent here: the digit only answers while the overlay is up, and the
         /// overlay is drawing the number that answers it.
-        var digit: String?
+        var digit: Int?
         /// The space the window is already showing. Marked rather than moved to
         /// the front: this is the sidebar's list, in the sidebar's order, and a
         /// list that reorders itself under a held key is not one you can aim at.
@@ -181,10 +183,11 @@ final class SpaceSwitcher {
         apply()
     }
 
-    /// The digit keys, one-based the way the tiles are numbered.
-    func jump(to position: Int) {
-        guard isOpen, items.indices.contains(position - 1) else { return }
-        highlighted = position - 1
+    /// The digit keys, to the tile drawing that digit: not the nth tile, since
+    /// a collapsed host's tiles carry none.
+    func jump(to digit: Int) {
+        guard isOpen, let index = items.firstIndex(where: { $0.digit == digit }) else { return }
+        highlighted = index
         apply()
     }
 
@@ -483,11 +486,11 @@ private final class SpaceTile: NSView {
         hostLabel.stringValue = item.hostName
         hostLabel.font = ChromeMetrics.font(10)
         hostLabel.lineBreakMode = .byTruncatingTail
-        digitLabel.stringValue = item.digit ?? ""
+        digitLabel.stringValue = item.digit.map(String.init) ?? ""
         digitLabel.font = ChromeMetrics.font(10, weight: .medium)
         // Hidden rather than empty: a stack view drops a hidden view from its
-        // layout, and an empty label past the ninth tile would otherwise leave
-        // the gap a digit sits in.
+        // layout, and an empty label on a tile no digit reaches would otherwise
+        // leave the gap a digit sits in.
         digitLabel.isHidden = item.digit == nil
         titleLabel.stringValue = item.title
         titleLabel.font = ChromeMetrics.font(13, weight: .medium)
