@@ -13,7 +13,7 @@ let package = Package(
     ],
     dependencies: [
         // The app's updater; Scripts/appcast.sh writes its feed.
-        .package(url: "https://github.com/sparkle-project/Sparkle", .upToNextMinor(from: "2.10.0")),
+        .package(url: "https://github.com/sparkle-project/Sparkle", .upToNextMinor(from: "2.10.1")),
     ],
     targets: [
         // libghostty, built from the pinned ghostty checkout in Vendor/ghostty
