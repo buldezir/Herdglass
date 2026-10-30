@@ -101,7 +101,7 @@ The first four interact. Read all four before touching `HerdrRPC` or `SessionCon
 - Never read a subprocess pipe only after `waitUntilExit()`; that deadlocks past the ~64 KB pipe buffer. `ProcessRunner` drains both streams concurrently — see `processRunnerSurvivesOutputLargerThanThePipeBuffer`.
 - `LineBuffer` yields `Data`, not `String`. A non-UTF-8 frame must not end the drain loop while complete records are still queued.
 - Launch from a shell (`./Scripts/dev.sh --run` or `swift run Herdglass`), not `open` / Finder, or `SSH_AUTH_SOCK` is missing.
-- libghostty is arm64 macOS 14+ and an unstable C API — the pin is the `Vendor/ghostty` gitlink, and moving it is its own commit, with `Scripts/libghostty.sh` rerun and `--show-ghostty-config` diffed before and after. Building it needs Xcode's Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); zig comes down at the version ghostty pins, which is rarely the one Homebrew has.
+- libghostty is arm64 macOS 14+ and an unstable C API — the pin is the `Vendor/ghostty` gitlink, and moving it is its own commit, with `Scripts/libghostty.sh` rerun and `--show-ghostty-config` diffed before and after. The script builds the commit the repository records, not the submodule's checkout, because `git pull` moves the first and not the second: a checkout *behind* the pin it updates, and any other it refuses, so `git add Vendor/ghostty` after checking out the new ghostty and before rerunning it. Building it needs Xcode's Metal toolchain (`xcodebuild -downloadComponent MetalToolchain`); zig comes down at the version ghostty pins, which is rarely the one Homebrew has.
 
 ## UI conventions
 

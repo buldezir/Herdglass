@@ -82,12 +82,13 @@ jobs:
             zig-${{ runner.os }}-${{ runner.arch }}-
 
       # ghostty compiles Metal shaders, and Xcode 26 ships that toolchain as a
-      # separate component the runner image does not always carry.
+      # separate component the runner image does not always carry. Run it
+      # rather than find it: `xcrun --find metal` answers without the component.
       - name: Metal toolchain
         if: steps.libghostty-cache.outputs.cache-hit != 'true'
         run: |
-          if xcrun --find metal >/dev/null 2>&1; then
-            echo "metal: $(xcrun --find metal)"
+          if xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+            echo "metal: $(xcrun -sdk macosx metal --version | head -n 1)"
           else
             xcodebuild -downloadComponent MetalToolchain
           fi

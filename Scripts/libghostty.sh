@@ -36,7 +36,12 @@ if [ ! -f "$SUBMODULE/build.zig" ]; then
   git submodule update --init "$SUBMODULE"
 fi
 
-PINNED="$(git -C "$SUBMODULE" rev-parse HEAD)"
+# The pin is the commit this repository records for the submodule, not the one
+# the submodule has checked out: `git pull` moves the first and leaves the
+# second where it was, and building the checkout then gives the app the header
+# of the ghostty it had before the pull.
+PINNED="$(git ls-files --stage -- "$SUBMODULE" | awk '{ print $2 }')"
+CHECKED_OUT="$(git -C "$SUBMODULE" rev-parse HEAD)"
 BUILT="$(sed -n 's/^ghostty_commit=//p' "$VERSION_FILE" 2>/dev/null || true)"
 
 # Both halves matter: the artifact can be missing on a fresh clone, and it can
@@ -61,6 +66,31 @@ elif [ "$CHECK" = 1 ]; then
     fi
     echo "            Run: Scripts/libghostty.sh" >&2
   fi
+  exit 1
+fi
+
+# A checkout behind the pin is a pull that did not take the submodule along, so
+# bring it up to the pin. Any other checkout is somebody's choice of commit —
+# most likely the pin being moved — and is not this script's to overwrite.
+if [ "$CHECKED_OUT" != "$PINNED" ]; then
+  if ! git -C "$SUBMODULE" cat-file -e "$PINNED^{commit}" 2>/dev/null \
+    || git -C "$SUBMODULE" merge-base --is-ancestor "$CHECKED_OUT" "$PINNED"; then
+    echo "libghostty: $SUBMODULE is checked out at ${CHECKED_OUT:0:9}, behind the pin ${PINNED:0:9}; updating it"
+    git submodule update --init "$SUBMODULE"
+  else
+    echo "libghostty: $SUBMODULE is checked out at ${CHECKED_OUT:0:9}, but the pin is ${PINNED:0:9}." >&2
+    echo "            To build the checkout, make it the pin: git add $SUBMODULE" >&2
+    echo "            To build the pin: git submodule update $SUBMODULE" >&2
+    exit 1
+  fi
+fi
+
+# ghostty compiles its shaders with Xcode's metal, which Xcode ships as a
+# separate component that an Xcode update can leave behind. `xcrun --find metal`
+# still answers then, so run it instead: zig carries on with every other step
+# after the shaders fail, and the reason ends up buried at the bottom.
+if ! xcrun -sdk macosx metal --version >/dev/null 2>&1; then
+  echo "libghostty: Xcode's Metal toolchain is missing. Run: xcodebuild -downloadComponent MetalToolchain" >&2
   exit 1
 fi
 
