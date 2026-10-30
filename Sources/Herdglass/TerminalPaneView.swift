@@ -235,6 +235,9 @@ final class TerminalPaneView: NSView {
         // Clicking a pane in a split is how the user moves the active pane, so
         // the click has to be seen here as well as by libghostty.
         view.onPrimaryClick = { [weak self] in self?.onActivate?() }
+        view.onMouseReport = { [weak self] action, button, event in
+            self?.reportMouse(action, button: button, event: event)
+        }
         view.onUpload = { [weak self] upload, completion in
             self?.upload(upload, completion: completion)
         }
@@ -410,10 +413,25 @@ final class TerminalPaneView: NSView {
             lines = (delta * 3).rounded(delta > 0 ? .up : .down)
         }
         guard lines != 0 else { return }
-        // A flung trackpad can produce absurd deltas; herdr clamps at the top
-        // of the scrollback anyway, this just keeps the message sane.
-        let count = min(Int(abs(lines)), 500)
-        control.scroll(lines > 0 ? .up : .down, lines: count)
+        // The cell matters as much as the count: a program that has taken the
+        // mouse scrolls whatever is under the pointer, and without one herdr
+        // reports every wheel at the top-left cell.
+        control.scroll(
+            lines > 0 ? .up : .down,
+            lines: Int(abs(lines)),
+            at: cell(of: event),
+            modifiers: .init(event.modifierFlags)
+        )
+    }
+
+    private func reportMouse(_ action: PaneControlChannel.MouseAction, button: PaneControlChannel.MouseButton, event: NSEvent) {
+        guard let control, let cell = cell(of: event) else { return }
+        control.mouse(action, button: button, at: cell, modifiers: .init(event.modifierFlags))
+    }
+
+    private func cell(of event: NSEvent) -> PaneControlChannel.Cell? {
+        guard let session, let terminalView else { return nil }
+        return session.cell(at: terminalView.convert(event.locationInWindow, from: nil))
     }
 
     /// Point height of one terminal row. libghostty reports the cell in pixels.
@@ -651,5 +669,16 @@ private final class AttentionRingView: NSView {
         pulse.autoreverses = true
         pulse.repeatCount = .infinity
         layer?.add(pulse, forKey: "pulse")
+    }
+}
+
+private extension PaneControlChannel.Modifiers {
+    /// ⌘ has no bit in herdr's encoding, and caps lock is not a modifier to a
+    /// program reading the mouse.
+    init(_ flags: NSEvent.ModifierFlags) {
+        self = []
+        if flags.contains(.shift) { insert(.shift) }
+        if flags.contains(.control) { insert(.control) }
+        if flags.contains(.option) { insert(.alt) }
     }
 }

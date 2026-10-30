@@ -1034,22 +1034,14 @@ private let emptySnapshotJSON = """
 
 // MARK: - Pane control channel
 
-@Test func controlChannelFramesScrollCommandsAsNDJSON() throws {
-    let channel = try #require(PaneControlChannel())
-    defer { channel.close() }
-
-    channel.scroll(.up, lines: 3)
-    channel.scroll(.down, lines: 1)
-    // Herdr rejects the whole command when `lines` is not positive, so the
-    // channel must not put one on the wire at all.
-    channel.scroll(.up, lines: 0)
-
+/// Everything written to a control channel so far, one dictionary per command.
+private func commandsWritten(to channel: PaneControlChannel) throws -> [[String: String]] {
     let fd = open(channel.path, O_RDONLY | O_NONBLOCK)
     try #require(fd >= 0)
     defer { close(fd) }
-    var buffer = [UInt8](repeating: 0, count: 4096)
+    var buffer = [UInt8](repeating: 0, count: 65536)
     let n = read(fd, &buffer, buffer.count)
-    try #require(n > 0)
+    guard n > 0 else { return [] }
 
     let lines = LineBuffer()
     lines.append(Data(buffer.prefix(n)))
@@ -1058,10 +1050,68 @@ private let emptySnapshotJSON = """
         let object = try #require(try JSONSerialization.jsonObject(with: line) as? [String: Any])
         commands.append(object.mapValues { "\($0)" })
     }
+    return commands
+}
 
-    #expect(commands.count == 2)
-    #expect(commands.first == ["type": "terminal.scroll", "direction": "up", "lines": "3", "source": "wheel"])
-    #expect(commands.last?["direction"] == "down")
+@Test func controlChannelFramesScrollCommandsAsNDJSON() throws {
+    let channel = try #require(PaneControlChannel())
+    defer { channel.close() }
+
+    channel.scroll(.up, lines: 3, at: .init(column: 40, row: 10), modifiers: [.shift])
+    channel.scroll(.down, lines: 1)
+    // Herdr rejects the whole command when `lines` is not positive, so the
+    // channel must not put one on the wire at all.
+    channel.scroll(.up, lines: 0)
+
+    let commands = try commandsWritten(to: channel)
+    // A program that has taken the mouse gets one wheel report per command
+    // whatever `lines` says, so three lines are three commands of one.
+    #expect(commands.count == 4)
+    #expect(commands.prefix(3).allSatisfy {
+        $0 == ["type": "terminal.scroll", "direction": "up", "lines": "1", "source": "wheel",
+               "column": "40", "row": "10", "modifiers": "1"]
+    })
+    // Without a cell herdr reports at the top-left one, so none is invented.
+    #expect(commands.last == ["type": "terminal.scroll", "direction": "down", "lines": "1", "source": "wheel"])
+}
+
+@Test func controlChannelCapsAFlungScrollInsideTheFIFO() throws {
+    let channel = try #require(PaneControlChannel())
+    defer { channel.close() }
+
+    channel.scroll(.down, lines: 10_000, at: .init(column: 199, row: 99), modifiers: [.shift, .control, .alt])
+
+    let commands = try commandsWritten(to: channel)
+    #expect(commands.count == PaneControlChannel.maximumScrollLines)
+    #expect(commands.allSatisfy { $0["lines"] == "1" && $0["direction"] == "down" })
+}
+
+@Test func controlChannelReportsTheMouseOncePerCell() throws {
+    let channel = try #require(PaneControlChannel())
+    defer { channel.close() }
+
+    channel.mouse(.move, at: .init(column: 3, row: 4))
+    channel.mouse(.move, at: .init(column: 3, row: 4))
+    channel.mouse(.down, at: .init(column: 3, row: 4))
+    channel.mouse(.drag, at: .init(column: 3, row: 4))
+    channel.mouse(.drag, at: .init(column: 3, row: 5))
+    channel.mouse(.drag, at: .init(column: 3, row: 5))
+    channel.mouse(.up, at: .init(column: 3, row: 5))
+    // A press is never a duplicate: a double click is two of them.
+    channel.mouse(.down, button: .middle, at: .init(column: 3, row: 5), modifiers: [.alt])
+    channel.mouse(.down, button: .middle, at: .init(column: 3, row: 5), modifiers: [.alt])
+
+    let commands = try commandsWritten(to: channel)
+    #expect(commands.map { "\($0["action"]!) \($0["column"]!),\($0["row"]!)" } == [
+        "move 3,4", "down 3,4", "drag 3,4", "drag 3,5", "up 3,5", "down 3,5", "down 3,5",
+    ])
+    #expect(commands.allSatisfy { $0["type"] == "terminal.mouse" })
+    // `button` means nothing to a move, and herdr's default is left anyway.
+    #expect(commands.first?["button"] == nil)
+    #expect(commands[1]["button"] == "left")
+    #expect(commands[1]["modifiers"] == nil)
+    #expect(commands.last?["button"] == "middle")
+    #expect(commands.last?["modifiers"] == "4")
 }
 
 @Test func controlChannelRemovesItsFIFOOnClose() throws {

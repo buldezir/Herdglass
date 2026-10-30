@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import GhosttyKit
+import HerdrClient
 
 // Ported from GhosttyKit (MIT, https://github.com/briannadoubt/GhosttyKit).
 // The handler struct it used to hand a consumer is gone: the view is ours too,
@@ -30,6 +31,60 @@ final class TerminalSession {
         fileprivate(set) var cellSize: (width: Int, height: Int)?
     }
 
+    /// libghostty's grid inside the surface, in pixels: enough to say which
+    /// cell a point is in, which herdr needs for every mouse event and the C
+    /// API has no call for.
+    struct Grid: Equatable {
+        var columns: Int
+        var rows: Int
+        var cellWidth: Double
+        var cellHeight: Double
+        /// The surface, padding included.
+        var width: Double
+        var height: Double
+        /// The grid's top-left corner in the surface, i.e. libghostty's padding.
+        var origin: CGPoint = .zero
+
+        func hasSameSize(as other: Grid) -> Bool {
+            columns == other.columns && rows == other.rows
+                && cellWidth == other.cellWidth && cellHeight == other.cellHeight
+                && width == other.width && height == other.height
+        }
+
+        /// Ghostty's own `posToViewport`: off the grid clamps to its edge.
+        func cell(atPixelX x: Double, y: Double) -> PaneControlChannel.Cell {
+            let column = Int(max(0, x - origin.x) / cellWidth)
+            let row = Int(max(0, y - origin.y) / cellHeight)
+            return .init(column: min(column, columns - 1), row: min(row, rows - 1))
+        }
+
+        /// The padding, from `read_text`'s top-left of the first cell and
+        /// `ime_point`'s bottom of the cursor's cell, both in points.
+        ///
+        /// The left edge is the first cell's x. Its y is
+        /// `top + cell height - baseline`, the cursor's is
+        /// `top + (cursor row + 1) * cell height`, so they differ by
+        /// `cursor row * cell height + baseline` — and the baseline is measured
+        /// up from the bottom of a cell and lies inside it, so it is that
+        /// difference modulo one cell, and the top falls out. A top that does
+        /// not fit inside the surface means a libghostty that answers
+        /// differently; the left padding is then the better guess, since both
+        /// are scaled by the same DPI.
+        func origin(firstCellTopLeft: CGPoint, cursorBottom: Double, scale: Double) -> CGPoint {
+            let left = (firstCellTopLeft.x * scale).rounded()
+            guard left >= 0, left < width else { return .zero }
+            let firstY = (firstCellTopLeft.y * scale).rounded()
+            let cursorY = (cursorBottom * scale).rounded()
+            let difference = cursorY - firstY
+            var baseline = difference.truncatingRemainder(dividingBy: cellHeight)
+            if baseline < 0 { baseline += cellHeight }
+            let top = firstY - cellHeight + baseline
+            let spare = height - Double(rows) * cellHeight
+            guard top >= 0, top <= spare else { return CGPoint(x: left, y: min(left, max(spare, 0))) }
+            return CGPoint(x: left, y: top)
+        }
+    }
+
     let host: TerminalHost
     let state = State()
     private(set) var configuration: Launch
@@ -43,6 +98,8 @@ final class TerminalSession {
     /// query runs on the I/O thread and must never start a file upload.
     private(set) var isReadingClipboardForPaste = false
     nonisolated(unsafe) private var secureEventInputEnabled = false
+    /// Read back once per size, since it takes two calls into libghostty.
+    private var cachedGrid: Grid?
 
     init(host: TerminalHost, configuration: Launch = Launch()) {
         self.host = host
@@ -86,6 +143,7 @@ final class TerminalSession {
         let scale = Double(scale)
         guard scale.isFinite, scale > 0 else { return }
         ghostty_surface_set_content_scale(surface, scale, scale)
+        cachedGrid = nil
     }
 
     func render() {
@@ -185,6 +243,53 @@ final class TerminalSession {
         ghostty_surface_mouse_scroll(surface, event.scrollingDeltaX, event.scrollingDeltaY, translateScrollModifiers(event))
     }
 
+    /// The cell of the grid under `point`, a point of the view in AppKit's own
+    /// coordinates (y up), clamped to the grid the way libghostty clamps a drag
+    /// that leaves the surface. The grid is libghostty's, and so is the size
+    /// herdr renders at, so this is the cell herdr means too.
+    func cell(at point: NSPoint) -> PaneControlChannel.Cell? {
+        guard let surface, let view, let grid = currentGrid(of: surface) else { return nil }
+        let scale = Double(scale)
+        return grid.cell(atPixelX: Double(point.x) * scale, y: Double(view.bounds.height - point.y) * scale)
+    }
+
+    private func currentGrid(of surface: ghostty_surface_t) -> Grid? {
+        let size = ghostty_surface_size(surface)
+        guard size.columns > 0, size.rows > 0, size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
+        var grid = Grid(
+            columns: Int(size.columns),
+            rows: Int(size.rows),
+            cellWidth: Double(size.cell_width_px),
+            cellHeight: Double(size.cell_height_px),
+            width: Double(size.width_px),
+            height: Double(size.height_px)
+        )
+        if let cached = cachedGrid, cached.hasSameSize(as: grid) { return cached }
+        grid.origin = gridOrigin(of: surface, grid: grid)
+        cachedGrid = grid
+        return grid
+    }
+
+    /// Where libghostty puts the grid inside the surface: its own
+    /// `window-padding-x`/`-y`, scaled, and balanced when the config says so.
+    /// The C API has a getter for neither, nor a point-to-cell call, so it is
+    /// read back from two answers it does give. `read_text` reports the top-left
+    /// of a selection — the grid's left edge exactly, but its top only as
+    /// `top + cell height - baseline`; `ime_point` reports the bottom of the
+    /// cursor's cell, `top + (cursor row + 1) * cell height`. See `Grid.origin`.
+    private func gridOrigin(of surface: ghostty_surface_t, grid: Grid) -> CGPoint {
+        let corner = ghostty_point_s(tag: GHOSTTY_POINT_VIEWPORT, coord: GHOSTTY_POINT_COORD_EXACT, x: 0, y: 0)
+        var text = ghostty_text_s()
+        guard ghostty_surface_read_text(surface, ghostty_selection_s(top_left: corner, bottom_right: corner, rectangle: false), &text) else {
+            return .zero
+        }
+        let firstCell = CGPoint(x: text.tl_px_x, y: text.tl_px_y)
+        ghostty_surface_free_text(surface, &text)
+        var imeX = 0.0, imeY = 0.0, imeWidth = 0.0, imeHeight = 0.0
+        ghostty_surface_ime_point(surface, &imeX, &imeY, &imeWidth, &imeHeight)
+        return grid.origin(firstCellTopLeft: firstCell, cursorBottom: imeY, scale: Double(scale))
+    }
+
     /// Copies the selection with libghostty's own action rather than reading
     /// the cells back ourselves: only the action honours
     /// `clipboard-trim-trailing-spaces`, so only the action leaves behind the
@@ -232,6 +337,8 @@ final class TerminalSession {
     func updateConfig(_ config: ghostty_config_t) {
         guard let surface else { return }
         ghostty_surface_update_config(surface, config)
+        // The padding can change without the grid changing size.
+        cachedGrid = nil
         applyColorScheme(appearance: view?.effectiveAppearance)
     }
 
