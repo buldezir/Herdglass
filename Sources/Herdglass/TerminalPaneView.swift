@@ -308,6 +308,11 @@ final class TerminalPaneView: NSView {
     override func mouseEntered(with event: NSEvent) {
         super.mouseEntered(with: event)
         guard GhosttyRuntime.config.focusFollowsMouse, terminalView != nil else { return }
+        // A tracking area knows nothing about the views stacked over it: with
+        // the Files card or the spaces overlay up, the pointer crossing the
+        // card still "enters" the pane underneath, which would take the
+        // keyboard out of the card and into a terminal nobody can see.
+        guard window?.contentView?.hitTest(event.locationInWindow)?.isDescendant(of: self) == true else { return }
         onActivate?()
         focusTerminal()
     }

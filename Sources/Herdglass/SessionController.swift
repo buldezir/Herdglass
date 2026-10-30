@@ -162,6 +162,8 @@ final class SessionController {
     /// `_waitForPendingChangesToFinish` (which needs a pool thread of its own)
     /// until the backlog drained, for the best part of a minute.
     private let work = DispatchQueue(label: "herdr.session", qos: .userInitiated)
+    /// The Files card's SSH jobs — see `files(_:completion:)`.
+    private let fileWork = DispatchQueue(label: "herdr.session.files", qos: .userInitiated)
     /// A snapshot is in flight; another request would only queue behind it.
     private var snapshotInFlight = false
     /// Something asked for a snapshot while one was in flight. One more when it
@@ -196,6 +198,40 @@ final class SessionController {
             DispatchQueue.main.async {
                 guard let self, self.connection === connection else {
                     completion(.failure(HerdrRPCError(code: "upload_disconnected", message: "The host disconnected during the upload.")))
+                    return
+                }
+                completion(result)
+            }
+        }
+    }
+
+    /// A job for the Files card, run against the host's files through the
+    /// session's SSH master.
+    ///
+    /// Not on `work`. That queue carries the poll, the snapshot and every
+    /// `pane.focus`, and a 4 MB read sitting in front of them is an attention
+    /// ring that stops updating while a file loads. Its own queue, but still a
+    /// *serial* one: each job is an SSH session on the master, and sshd refuses
+    /// the eleventh (`MaxSessions`), so a burst of folder expansions queues here
+    /// rather than opening ten channels at once.
+    ///
+    /// The connection is the one current *now*, so a save after a reconnect
+    /// goes to the new master; a result for a connection that has since gone is
+    /// reported as a disconnect rather than delivered.
+    func files<T: Sendable>(
+        _ body: @escaping @Sendable (RemoteFiles) throws -> T,
+        completion: @escaping @MainActor (Result<T, Error>) -> Void
+    ) {
+        guard let connection, state.isConnected else {
+            completion(.failure(HerdrRPCError(code: "files_disconnected", message: "Connect the host to reach its files.")))
+            return
+        }
+        let files = connection.files
+        fileWork.async { [weak self] in
+            let result = Result { try body(files) }
+            DispatchQueue.main.async {
+                guard let self, self.connection === connection else {
+                    completion(.failure(HerdrRPCError(code: "files_disconnected", message: "The host disconnected.")))
                     return
                 }
                 completion(result)

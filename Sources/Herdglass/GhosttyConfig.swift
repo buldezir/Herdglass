@@ -137,6 +137,16 @@ struct GhosttyConfig {
     var saveState: SaveState = .default
     var confirmClose: ConfirmClose = .unlessTrivial
     var focusFollowsMouse = false
+    /// The sixteen ANSI colours, which the Files card paints source code with
+    /// so a file reads like the terminal beside it. Empty when the C API would
+    /// not give them up.
+    var palette: [NSColor] = []
+    /// `font-size`, for the Files card's editor: the text in it is content,
+    /// like a terminal's, not chrome. ghostty's own macOS default.
+    var fontSize: Double = 13
+    /// The first `font-family`, read from the config's text — see
+    /// `declaredFontFamily`. Nil means the system's monospaced face.
+    var fontFamily: String?
     /// True when the config asks for separate light and dark themes, i.e.
     /// `theme = light:…,dark:…`.
     ///
@@ -258,7 +268,11 @@ struct GhosttyConfig {
         saveState = Self.value(config, "window-save-state", SaveState.self) ?? .default
         confirmClose = Self.value(config, "confirm-close-surface", ConfirmClose.self) ?? .unlessTrivial
         focusFollowsMouse = Self.bool(config, "focus-follows-mouse") ?? false
-        hasLightDarkTheme = Self.declaresLightDarkTheme()
+        palette = Self.palette(config)
+        fontSize = Self.float(config, "font-size").map(Double.init) ?? fontSize
+        let lines = Self.configLines()
+        hasLightDarkTheme = Self.declaresLightDarkTheme(lines)
+        fontFamily = Self.declaredFontFamily(lines)
 
         for action in Action.allCases {
             guard let shortcut = Self.shortcut(config, action.rawValue) else { continue }
@@ -270,8 +284,9 @@ struct GhosttyConfig {
     //
     // `ghostty_config_get` writes through a `void*` whose type is decided by the
     // config field, so each of these has to match libghostty's own mapping
-    // (`src/config/c_get.zig`): bool, `c_uint`, `c_short`, `f64`, a colour
-    // struct, and `const char*` for both strings and enum tags. It returns false
+    // (`src/config/c_get.zig`): bool, `c_uint`, `c_short`, the field's own float
+    // width (`f32` or `f64`), a colour struct, the palette struct, and
+    // `const char*` for both strings and enum tags. It returns false
     // for a key the C API does not expose, and for an optional that is unset —
     // which is how `split-divider-color` says "derive one".
 
@@ -282,6 +297,13 @@ struct GhosttyConfig {
 
     private static func double(_ config: ghostty_config_t, _ key: String) -> Double? {
         var value: Double = 0
+        return ghostty_config_get(config, &value, key, UInt(key.utf8.count)) ? value : nil
+    }
+
+    /// For an `f32` field such as `font-size`: `c_get.zig` writes the field's
+    /// own width, so reading one into a `Double` would leave half of it garbage.
+    private static func float(_ config: ghostty_config_t, _ key: String) -> Float? {
+        var value: Float = 0
         return ghostty_config_get(config, &value, key, UInt(key.utf8.count)) ? value : nil
     }
 
@@ -306,16 +328,12 @@ struct GhosttyConfig {
         string(config, key).flatMap(T.init(rawValue:))
     }
 
-    /// `theme` is a plain Zig struct, so `ghostty_config_get` refuses it and the
-    /// pair has to be spotted in the text of the config instead — the same
-    /// `theme` line, and the same comma/colon/equals test, that ghostty uses to
-    /// decide it is parsing a pair.
+    /// The lines of the config files ghostty loads by default, in its order.
     ///
-    /// Only ghostty's own default locations are read. A pair reached through a
-    /// `config-file` include is missed, because `config-file` is not readable
-    /// through the C API either; that lands back on treating the light half as
-    /// the whole palette, which is what happens without this check at all.
-    private static func declaresLightDarkTheme() -> Bool {
+    /// Only ghostty's own default locations are read. Anything reached through
+    /// a `config-file` include is missed, because `config-file` is not readable
+    /// through the C API either.
+    private static func configLines() -> [Substring] {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let xdg = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"]
             .map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".config")
@@ -323,15 +341,57 @@ struct GhosttyConfig {
             xdg.appendingPathComponent("ghostty/config"),
             home.appendingPathComponent("Library/Application Support/com.mitchellh.ghostty/config"),
         ]
-        return paths.contains { url in
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return false }
-            return text.split(whereSeparator: \.isNewline).contains { line in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix("theme") else { return false }
-                let rest = trimmed.dropFirst("theme".count).trimmingCharacters(in: .whitespaces)
-                guard rest.hasPrefix("=") else { return false }
-                let value = rest.dropFirst()
-                return value.contains(",") || value.contains(":") || value.contains("=")
+        return paths.flatMap { url -> [Substring] in
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+            return text.split(whereSeparator: \.isNewline)
+        }
+    }
+
+    /// The value of a `key = value` line, or nil when the line sets another key.
+    private static func value(of key: String, in line: Substring) -> Substring? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix(key) else { return nil }
+        let rest = trimmed.dropFirst(key.count).trimmingCharacters(in: .whitespaces)
+        guard rest.hasPrefix("=") else { return nil }
+        return Substring(rest.dropFirst().trimmingCharacters(in: .whitespaces))
+    }
+
+    /// `theme` is a plain Zig struct, so `ghostty_config_get` refuses it and the
+    /// pair has to be spotted in the text of the config instead — the same
+    /// `theme` line, and the same comma/colon/equals test, that ghostty uses to
+    /// decide it is parsing a pair. A pair behind a `config-file` include lands
+    /// back on treating the light half as the whole palette, which is what
+    /// happens without this check at all.
+    private static func declaresLightDarkTheme(_ lines: [Substring]) -> Bool {
+        lines.contains { line in
+            guard let value = value(of: "theme", in: line) else { return false }
+            return value.contains(",") || value.contains(":") || value.contains("=")
+        }
+    }
+
+    /// `font-family` is a `RepeatableString`, which has no `cval`, so it is read
+    /// from the text like `theme`. Each line adds a fallback and an empty one
+    /// clears the list, so the primary face is the first name after the last
+    /// clear.
+    private static func declaredFontFamily(_ lines: [Substring]) -> String? {
+        var families: [String] = []
+        for line in lines {
+            guard let value = value(of: "font-family", in: line) else { continue }
+            let name = value.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            if name.isEmpty { families.removeAll() } else { families.append(name) }
+        }
+        return families.first
+    }
+
+    /// The first sixteen entries: the ANSI colours, which are what a program in
+    /// a terminal paints with. The other 240 are the cube and the greys.
+    private static func palette(_ config: ghostty_config_t) -> [NSColor] {
+        var value = ghostty_config_palette_s()
+        let key = "palette"
+        guard ghostty_config_get(config, &value, key, UInt(key.utf8.count)) else { return [] }
+        return withUnsafeBytes(of: value.colors) { raw in
+            raw.bindMemory(to: ghostty_config_color_s.self).prefix(16).map { color in
+                NSColor(srgbRed: CGFloat(color.r) / 255, green: CGFloat(color.g) / 255, blue: CGFloat(color.b) / 255, alpha: 1)
             }
         }
     }
@@ -449,6 +509,10 @@ extension GhosttyConfig {
         row("split-divider-color", splitDividerColor?.hexString ?? "\(effectiveSplitDividerColor.hexString) (derived)")
         row("unfocused-split-opacity", String(format: "%.2f", 1 - unfocusedSplitDim))
         row("unfocused-split-fill", unfocusedSplitFill?.hexString ?? "\(terminalBackground.hexString) (background)")
+        lines.append("files card")
+        row("palette", palette.isEmpty ? "(unreadable)" : palette.map(\.hexString).joined(separator: " "))
+        row("font-size", String(format: "%g", fontSize))
+        row("font-family", fontFamily ?? "(system monospaced)")
         lines.append("window")
         row("window-theme", "\(windowTheme.rawValue) → \(appearance?.name.rawValue ?? "system")")
         row("macos-titlebar-style", titlebarStyle.rawValue)

@@ -17,6 +17,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// The spaces of every attached host, over the terminal, while ⌘` or a held
     /// ⌥⌘ asks for them.
     private let switcher = SpaceSwitcher()
+    /// The host's files over the terminal, while ⌘J asks for them.
+    private let files = FileBrowser()
     private var splitItem: NSToolbarItem?
     private var connectSheet: ConnectSheetController?
     private var keyMonitor: Any?
@@ -39,6 +41,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         wireTabBar()
         wireContent()
         wireSwitcher()
+        files.onClose = { [weak self] in self?.content.focusActivePane() }
 
         window.delegate = self
         window.title = "Herdglass"
@@ -102,11 +105,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     // MARK: - Wiring
 
     private func wireSidebar() {
-        sidebar.onPointerInteraction = { [weak self] in self?.content.focusActivePane() }
+        sidebar.onPointerInteraction = { [weak self] in self?.focusTerminalArea() }
         sidebar.onSelectHost = { [weak self] id, source in
             guard let self else { return }
             self.connections.select(id)
-            if source == .pointer { self.content.focusActivePane() }
+            if source == .pointer { self.focusTerminalArea() }
         }
         sidebar.onSelectSpace = { [weak self] rowId, source in
             guard let self, let (connectionId, workspaceId) = Self.spaceRow(rowId) else { return }
@@ -195,7 +198,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         blur.material = .underWindowBackground
         blur.state = .active
         blur.isHidden = true
-        for view in [blur, tabBar, content, switcher.view] as [NSView] {
+        for view in [blur, tabBar, content, files.view, switcher.view] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -221,7 +224,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             content.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
         ])
         // The safe area, like the strip and the panes: the overlay dims what it
-        // is a shortcut through, and the titlebar is not part of that.
+        // is a shortcut through, and the titlebar is not part of that. The Files
+        // card sits under the spaces overlay, which can still be summoned over
+        // it — picking a space moves what is behind the card, not the card.
+        NSLayoutConstraint.activate([
+            files.view.topAnchor.constraint(equalTo: guide.topAnchor),
+            files.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
+            files.view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            files.view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+        ])
         NSLayoutConstraint.activate([
             switcher.view.topAnchor.constraint(equalTo: guide.topAnchor),
             switcher.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
@@ -283,12 +294,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     private static let connectItemIdentifier = NSToolbarItem.Identifier("connect")
     private static let splitItemIdentifier = NSToolbarItem.Identifier("split")
+    private static let filesItemIdentifier = NSToolbarItem.Identifier("files")
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [
             .toggleSidebar,
             .sidebarTrackingSeparator,
             .flexibleSpace,
+            Self.filesItemIdentifier,
             Self.splitItemIdentifier,
             Self.connectItemIdentifier,
         ]
@@ -318,6 +331,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             item.action = #selector(splitRight)
             splitItem = item
             applyToolbarTooltips(GhosttyRuntime.config)
+            return item
+        case Self.filesItemIdentifier:
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.label = "Files"
+            item.toolTip = "Show or hide this host's files (⌘J)"
+            item.image = NSImage(systemSymbolName: "folder", accessibilityDescription: nil)
+            item.target = self
+            item.action = #selector(toggleFiles(_:))
             return item
         case Self.connectItemIdentifier:
             let item = NSToolbarItem(itemIdentifier: identifier)
@@ -480,7 +501,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard let session = connections.selectedSession else { return }
         content.allowReattach()
         body(session)
-        if focusTerminal { content.focusActivePane() }
+        if focusTerminal { focusTerminalArea() }
+    }
+
+    /// The keyboard to whatever is in front in the terminal area: the Files
+    /// card while it is up — a pane under it would take every keystroke out of
+    /// sight — and the active pane otherwise.
+    private func focusTerminalArea() {
+        if files.isOpen { files.focus() } else { content.focusActivePane() }
     }
 
     // MARK: - Actions
@@ -495,7 +523,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard let sheetWindow = sheet.window else { return }
         window.beginSheet(sheetWindow) { [weak self] _ in
             self?.connectSheet = nil
-            self?.content.focusActivePane()
+            self?.focusTerminalArea()
         }
     }
 
@@ -507,7 +535,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         }
         content.allowReattach()
         guard connections.selectedSession?.jumpToAttention() != nil else { NSSound.beep(); return }
-        content.focusActivePane()
+        focusTerminalArea()
     }
 
     /// Show the pane behind a notification: the host it belongs to, the space
@@ -539,6 +567,47 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         connections.selectedSession?.newTab()
     }
 
+    /// ⌘J: the Files card, on the host the window is showing, rooted at the
+    /// repository the selected pane is in — or, when it is already up, put
+    /// away, asking first about an unsaved edit like every other way out.
+    @objc func toggleFiles(_ sender: Any?) {
+        if files.isOpen {
+            files.close()
+            return
+        }
+        guard let id = connections.selectedConnectionId, let connection = connections.connection(id: id),
+              connection.session.state.isConnected
+        else { return }
+        files.open(
+            session: connection.session,
+            hostName: connection.target.displayName,
+            directory: connection.session.selectedPane?.currentDirectory
+        )
+    }
+
+    @objc func saveFile(_ sender: Any?) {
+        files.save()
+    }
+
+    /// Find, Find Next and Find Previous, for the Files card's editor. Not
+    /// `performTextFinderAction:` on the menu items themselves: `NSResponder`
+    /// answers that selector for every view, so the items would be enabled over
+    /// a pane too and take ⌘F away from the terminal. This is validated against
+    /// where the keyboard actually is, and hands the item on to the text view,
+    /// whose finder reads the action from its tag.
+    @objc func findInFile(_ sender: Any?) {
+        files.performFind(sender)
+    }
+
+    /// Whatever the user did with the file comes first: closing the window
+    /// with an unsaved edit asks, and closes only once that is answered.
+    var hasUnsavedFile: Bool { files.isDirty }
+
+    func confirmDiscardingFile(_ completion: @escaping (Bool) -> Void) {
+        window?.makeKeyAndOrderFront(nil)
+        files.confirmDiscard(completion)
+    }
+
     @objc func closeTab(_ sender: Any?) {
         guard let tabId = connections.selectedSession?.selectedTabId else { return }
         confirmCloseTab(tabId)
@@ -549,6 +618,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// pane, closing the pane and closing the tab are the same act, and the tab
     /// is the one worth confirming.
     @objc func closePane(_ sender: Any?) {
+        // With the Files card up, what is in front of the user is the card.
+        if files.isOpen {
+            files.close()
+            return
+        }
         guard let session = connections.selectedSession, let tabId = session.selectedTabId else { return }
         guard let paneId = session.selectedPaneId, session.panes(inTab: tabId).count > 1 else {
             confirmCloseTab(tabId)
@@ -775,7 +849,31 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let session = connections.selectedSession
+        // The card covers the tab strip and the panes, so nothing may act on
+        // them unseen — the spaces overlay's rule. Spaces and hosts stay
+        // reachable: they are the sidebar's, which the card leaves uncovered.
+        if files.isOpen {
+            switch menuItem.action {
+            case #selector(newTab(_:)), #selector(closeTab(_:)),
+                 #selector(splitRight), #selector(splitDown),
+                 #selector(focusPaneLeft), #selector(focusPaneRight),
+                 #selector(focusPaneUp), #selector(focusPaneDown),
+                 #selector(selectNextTab), #selector(selectPreviousTab):
+                return false
+            case #selector(closePane(_:)):
+                return true
+            default:
+                break
+            }
+        }
         switch menuItem.action {
+        case #selector(toggleFiles(_:)):
+            menuItem.title = files.isOpen ? "Hide Files" : "Show Files"
+            return files.isOpen || session?.state.isConnected == true
+        case #selector(saveFile(_:)):
+            return files.isOpen && files.canSave
+        case #selector(findInFile(_:)):
+            return files.canFind
         case #selector(jumpToAttention):
             return connections.hasAttention
         case #selector(disconnect), #selector(reconnect):
@@ -798,6 +896,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     }
 
     // MARK: - NSWindowDelegate
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard files.isDirty else { return true }
+        files.confirmDiscard { [weak self] proceed in
+            if proceed { self?.window?.close() }
+        }
+        return false
+    }
 
     func windowWillClose(_ notification: Notification) {
         NotificationCenter.default.removeObserver(self, name: GhosttyRuntime.configDidChangeNotification, object: nil)

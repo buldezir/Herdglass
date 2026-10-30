@@ -264,7 +264,7 @@ final class SpaceSwitcherView: NSView {
     /// rows below it to keep them even.
     private static let maximumColumns = 6
 
-    private let scrim = SwitcherScrimView()
+    private let scrim = TerminalScrimView()
     private let card = NSVisualEffectView()
     private let stack = NSStackView()
     private let grid = NSStackView()
@@ -547,7 +547,10 @@ private final class SpaceTile: NSView {
 /// alpha rather than a semantic colour — the same rule the unfocused-split scrim
 /// follows, and for the same reason: a semantic grey over a terminal palette is
 /// the one combination that can come out lighter than what it is dimming.
-private final class SwitcherScrimView: NSView {
+/// The terminal dimmed under an overlay: ghostty's own background at partial
+/// alpha, not a semantic grey, the same rule the unfocused-split scrim follows.
+/// Shared by the spaces overlay and the Files card.
+final class TerminalScrimView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true

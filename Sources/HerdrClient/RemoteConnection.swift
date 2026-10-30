@@ -101,6 +101,27 @@ public final class RemoteConnection: @unchecked Sendable {
         }
     }
 
+    /// The host's files, through the same SSH master as everything else.
+    public var files: RemoteFiles {
+        RemoteFiles { [self] script, timeout in runScript(script, timeout: timeout) }
+    }
+
+    /// Run a script on the host: `bash -s` through the master, or a local
+    /// `bash` for the server on this Mac. The script goes on stdin — argv after
+    /// the host is joined and re-split by the remote login shell.
+    public func runScript(_ script: String, timeout: TimeInterval) -> ProcessRunner.Result {
+        lock.lock()
+        let closed = isClosed
+        lock.unlock()
+        guard !closed else {
+            return ProcessRunner.Result(terminationStatus: 1, stdout: "", stderr: "The host is disconnected.")
+        }
+        if target.isLocal {
+            return ProcessRunner.run(executable: "/bin/bash", arguments: ["-s"], extraEnv: [:], stdin: script, timeout: timeout)
+        }
+        return ssh(["bash", "-s"], stdin: script, timeout: timeout)
+    }
+
     private func openLocal() throws {
         let configDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/herdr", isDirectory: true)

@@ -51,6 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         true
     }
 
+    /// An unsaved edit in the Files card is asked about before anything is
+    /// torn down; Cancel, or a save that fails, keeps the app running.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let main, main.hasUnsavedFile else { return .terminateNow }
+        main.confirmDiscardingFile { proceed in
+            sender.reply(toApplicationShouldTerminate: proceed)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // Drop SSH masters and temp dirs now; `deinit` is not guaranteed at exit.
         main?.window?.performClose(nil)
@@ -228,6 +238,11 @@ enum MainMenu {
         )
         newSpace.keyEquivalentModifierMask = [.command, .option]
         menu.addItem(.separator())
+        // The Files card's Save. ⌘S is the key a Mac user reaches for, ghostty
+        // binds nothing to it, and a `keybind` that lands on it still takes it
+        // (`surrenderShortcuts`). The card itself is View ▸ Show Files.
+        menu.addItem(withTitle: "Save", action: #selector(MainWindowController.saveFile(_:)), keyEquivalent: "s")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Reconnect", action: #selector(MainWindowController.reconnect), keyEquivalent: "r")
         menu.addItem(withTitle: "Disconnect", action: #selector(MainWindowController.disconnect), keyEquivalent: "")
         menu.addItem(.separator())
@@ -352,6 +367,23 @@ enum MainMenu {
             .ghostty(.paste)
         menu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
             .ghostty(.selectAll)
+        menu.addItem(.separator())
+        // The Files card's editor only; disabled over a pane, so ⌘F there is
+        // still the terminal's. The tags are `NSTextFinder.Action`s, which is
+        // how the text view's finder knows which one was picked.
+        let find = NSMenu(title: "Find")
+        for (title, key, modifiers, action) in [
+            ("Find…", "f", NSEvent.ModifierFlags.command, NSTextFinder.Action.showFindInterface),
+            ("Find Next", "g", .command, .nextMatch),
+            ("Find Previous", "g", [.command, .shift], .previousMatch),
+        ] {
+            let item = find.addItem(withTitle: title, action: #selector(MainWindowController.findInFile(_:)), keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+            item.tag = action.rawValue
+        }
+        let findItem = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        findItem.submenu = find
+        menu.addItem(findItem)
         return menu
     }
 
@@ -363,6 +395,13 @@ enum MainMenu {
             action: #selector(NSSplitViewController.toggleSidebar(_:)),
             keyEquivalent: "s"
         ).keyEquivalentModifierMask = [.command, .control]
+        // The Files card, shown and hidden on one key the way a panel is. ⌘J
+        // is ghostty's `scroll_to_selection` by default, which moves
+        // libghostty's own scrollback — always empty here, because Herdr owns
+        // the history — so the surface loses nothing by not seeing it. A
+        // `keybind` the user wrote for ⌘J still takes it (`surrenderShortcuts`).
+        // Titled by `MainWindowController.validateMenuItem`.
+        menu.addItem(withTitle: "Show Files", action: #selector(MainWindowController.toggleFiles(_:)), keyEquivalent: "j")
         let attention = menu.addItem(
             withTitle: "Jump to Attention",
             action: #selector(MainWindowController.jumpToAttention),
