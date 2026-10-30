@@ -101,6 +101,12 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// superseded before it arrived is dropped rather than shown.
     private var rootGeneration = 0
     private var openGeneration = 0
+    /// Raised while a listing redraws its folder. `reloadItem(_:reloadChildren:)`
+    /// re-expands every open folder it reloads, that folder included, and posts
+    /// `itemWillExpand` for each, inside the call. Taken for the user's expand,
+    /// that listed the folder again, whose reload listed it again: the tree
+    /// redrew itself for as long as a folder was open.
+    private var isRedrawingListing = false
 
     override init() {
         super.init()
@@ -265,7 +271,9 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
                 node.children = node.children ?? []
                 node.error = error.localizedDescription.components(separatedBy: "\n").last ?? "Could not list this folder."
             }
+            self.isRedrawingListing = true
             self.view.outline.reloadItem(node === self.rootNode ? nil : node, reloadChildren: true)
+            self.isRedrawingListing = false
         }
     }
 
@@ -485,9 +493,10 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     /// Every expand lists the folder again, so a folder opened after an agent
     /// wrote into it shows what is there now. What was listed before is shown
-    /// meanwhile.
+    /// meanwhile. Not an expand a listing's own reload replays
+    /// (`isRedrawingListing`).
     func outlineViewItemWillExpand(_ notification: Notification) {
-        guard let node = notification.userInfo?["NSObject"] as? FileNode else { return }
+        guard !isRedrawingListing, let node = notification.userInfo?["NSObject"] as? FileNode else { return }
         load(node)
     }
 
