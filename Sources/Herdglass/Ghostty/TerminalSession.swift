@@ -213,6 +213,15 @@ final class TerminalSession {
         ghostty_surface_refresh(surface)
     }
 
+    /// Whether the program in the pane has taken the mouse. The bridge puts
+    /// libghostty in a mouse mode when herdr says so (`terminal.mouse_capture`),
+    /// so this is herdr's answer read back. Always false with a herdr too old
+    /// to say, which is not the same as the program not wanting the mouse.
+    var isMouseCaptured: Bool {
+        guard let surface else { return false }
+        return ghostty_surface_mouse_captured(surface)
+    }
+
     /// True when libghostty consumed the click, i.e. the program in the pane
     /// wanted it. A false means the view can offer its own context menu.
     @discardableResult

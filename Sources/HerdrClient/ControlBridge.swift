@@ -159,6 +159,98 @@ public enum ControlBridge {
         guard current.cols > 0, current.rows > 0, current != spawned else { return nil }
         return current
     }
+
+    /// What tells libghostty whether the program in the pane has taken the
+    /// mouse. Herdr strips the program's own mouse modes out of its frames and
+    /// says so in a `terminal.mouse_capture` record instead, so the bridge
+    /// writes a mode of its own into the surface: libghostty then stops
+    /// selecting on a plain drag, keeps Shift for selection, and answers the
+    /// GUI's `ghostty_surface_mouse_captured`. Press and release only, in SGR,
+    /// because what libghostty reports back is thrown away (`MouseReportFilter`)
+    /// — the GUI sends herdr the same click as `terminal.mouse`, which herdr
+    /// encodes for the mode the program really asked for.
+    public static func libghosttyMouseMode(capturing: Bool) -> Data {
+        Data((capturing ? "\u{1B}[?1000h\u{1B}[?1006h" : "\u{1B}[?1000l\u{1B}[?1006l").utf8)
+    }
+}
+
+/// Takes libghostty's own mouse reports out of what it types into the bridge.
+///
+/// They exist only while the bridge has put libghostty in a mouse mode (see
+/// `ControlBridge.libghosttyMouseMode`), and by then the GUI has already sent
+/// herdr the same event as `terminal.mouse`; passed on as `terminal.input` they
+/// would reach the program twice, the second time in an encoding it may not
+/// have asked for. An SGR report is `ESC [ <` digits `;` digits `;` digits and
+/// `M` or `m`, which no key produces — keys never put `<` after `ESC [` — so
+/// removing it cannot eat a keystroke. libghostty writes each report whole;
+/// one cut by the end of a read is held for the next, but only from its `<`
+/// on, because a bare `ESC` or `ESC [` at the end of a read is a key that must
+/// not wait.
+public struct MouseReportFilter {
+    private var pending: [UInt8] = []
+
+    public init() {}
+
+    public mutating func filter(_ chunk: Data) -> Data {
+        let bytes = pending + chunk
+        pending = []
+        var output = Data()
+        output.reserveCapacity(bytes.count)
+        var index = 0
+        while index < bytes.count {
+            guard bytes[index] == 0x1B else {
+                output.append(bytes[index])
+                index += 1
+                continue
+            }
+            switch Self.report(in: bytes, at: index) {
+            case .complete(let end):
+                index = end
+            case .truncated:
+                pending = Array(bytes[index...])
+                return output
+            case .none:
+                output.append(bytes[index])
+                index += 1
+            }
+        }
+        return output
+    }
+
+    private enum Match {
+        case complete(end: Int)
+        case truncated
+        case none
+    }
+
+    /// Whether an SGR mouse report starts at `start`, an `ESC`.
+    private static func report(in bytes: [UInt8], at start: Int) -> Match {
+        let introducer: [UInt8] = [0x1B, 0x5B, 0x3C] // ESC [ <
+        var index = start
+        for byte in introducer {
+            guard index < bytes.count, bytes[index] == byte else { return .none }
+            index += 1
+        }
+        var separators = 0
+        var digits = 0
+        while index < bytes.count {
+            switch bytes[index] {
+            case 0x30...0x39:
+                digits += 1
+            case 0x3B:
+                guard digits > 0, separators < 2 else { return .none }
+                separators += 1
+                digits = 0
+            case 0x4D, 0x6D:
+                guard digits > 0, separators == 2 else { return .none }
+                return .complete(end: index + 1)
+            default:
+                return .none
+            }
+            index += 1
+        }
+        return .truncated
+    }
 }
 
 /// libghostty hands the bridge a *cooked* PTY, which is wrong in every way for
@@ -214,6 +306,8 @@ private final class BridgeIO: @unchecked Sendable {
 
     func startStdin() {
         let stdinFD = STDIN_FILENO
+        // A read source runs its handler serially, so the filter needs no lock.
+        var mouseReports = MouseReportFilter()
         let source = DispatchSource.makeReadSource(fileDescriptor: stdinFD, queue: .global(qos: .userInteractive))
         source.setEventHandler { [self] in
             var buffer = [UInt8](repeating: 0, count: 4096)
@@ -226,7 +320,9 @@ private final class BridgeIO: @unchecked Sendable {
                 }
                 return
             }
-            send(["type": "terminal.input", "bytes": Data(buffer.prefix(n)).base64EncodedString()])
+            let input = mouseReports.filter(Data(buffer.prefix(n)))
+            guard !input.isEmpty else { return }
+            send(["type": "terminal.input", "bytes": input.base64EncodedString()])
         }
         source.resume()
         stdinSource = source
@@ -295,14 +391,23 @@ private final class BridgeIO: @unchecked Sendable {
 }
 
 private func handleHerdrLine(_ line: Data) {
-    guard !line.isEmpty,
-          let frame = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
-          frame["type"] as? String == "terminal.frame",
-          let encoded = frame["bytes"] as? String,
-          let bytes = Data(base64Encoded: encoded),
-          !bytes.isEmpty
-    else { return }
-    writeIgnoringBrokenPipe(STDOUT_FILENO, bytes)
+    guard !line.isEmpty, let record = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
+    switch record["type"] as? String {
+    case "terminal.frame":
+        guard let encoded = record["bytes"] as? String,
+              let bytes = Data(base64Encoded: encoded),
+              !bytes.isEmpty
+        else { return }
+        writeIgnoringBrokenPipe(STDOUT_FILENO, bytes)
+    case "terminal.mouse_capture":
+        // Herdr sends this when the program in the pane turns mouse reporting
+        // on or off, and once when the bridge attaches. A herdr from before it
+        // did never sends it, and libghostty then simply never captures.
+        guard let enabled = record["enabled"] as? Bool else { return }
+        writeIgnoringBrokenPipe(STDOUT_FILENO, ControlBridge.libghosttyMouseMode(capturing: enabled))
+    default:
+        return
+    }
 }
 
 private func currentWinSize() -> PTYSize {

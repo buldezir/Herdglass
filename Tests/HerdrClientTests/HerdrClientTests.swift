@@ -1192,6 +1192,42 @@ private func commandsWritten(to channel: PaneControlChannel) throws -> [[String:
     #expect(ControlBridge.startupResize(spawned: spawned, current: PTYSize(cols: 212, rows: 0)) == nil)
 }
 
+@Test func bridgeTellsLibghosttyAboutTheMouseInSGRPressAndReleaseOnly() {
+    // Press and release only: what libghostty reports back is thrown away, so
+    // the less it reports the better. SGR, because only that has a shape the
+    // filter can tell apart from keystrokes.
+    #expect(ControlBridge.libghosttyMouseMode(capturing: true) == Data("\u{1B}[?1000h\u{1B}[?1006h".utf8))
+    #expect(ControlBridge.libghosttyMouseMode(capturing: false) == Data("\u{1B}[?1000l\u{1B}[?1006l".utf8))
+}
+
+@Test func libghosttysOwnMouseReportsNeverReachTheProgram() {
+    var filter = MouseReportFilter()
+    let typed = Data("ls\u{1B}[<0;12;5Mx\u{1B}[<0;12;5m\r".utf8)
+    #expect(filter.filter(typed) == Data("lsx\r".utf8))
+    // Back to back, and right and middle with modifiers.
+    #expect(filter.filter(Data("\u{1B}[<2;1;1M\u{1B}[<18;200;60m".utf8)).isEmpty)
+}
+
+@Test func mouseReportFilterLeavesEveryKeyAlone() {
+    var filter = MouseReportFilter()
+    // Arrows, kitty keyboard reports, a bare Escape, Alt+[ and Alt+<: none of
+    // them is `ESC [ <` digits;digits;digits and M or m.
+    let keys = Data("\u{1B}[A\u{1B}OB\u{1B}[97;5u\u{1B}[27;5;9~\u{1B}\u{1B}[\u{1B}<\u{1B}[<1;2Mq\u{1B}[<a".utf8)
+    #expect(filter.filter(keys) == keys)
+}
+
+@Test func aMouseReportCutByAReadIsHeldForTheNextOneButAKeyIsNot() {
+    var filter = MouseReportFilter()
+    #expect(filter.filter(Data("a\u{1B}[<0;1".utf8)) == Data("a".utf8))
+    #expect(filter.filter(Data("2;5Mb".utf8)) == Data("b".utf8))
+    // Escape at the end of a read is a key, and must not wait for the next.
+    #expect(filter.filter(Data("c\u{1B}".utf8)) == Data("c\u{1B}".utf8))
+    #expect(filter.filter(Data("d\u{1B}[".utf8)) == Data("d\u{1B}[".utf8))
+    // Held text that turns out not to be a report is passed on, not dropped.
+    #expect(filter.filter(Data("\u{1B}[<3".utf8)).isEmpty)
+    #expect(filter.filter(Data("x".utf8)) == Data("\u{1B}[<3x".utf8))
+}
+
 /// The argv is handed to libghostty as one shell string, so every element has
 /// to survive `/bin/sh -c` — including an app bundle somebody moved into a
 /// directory with a space in it.

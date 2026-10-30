@@ -28,11 +28,12 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     /// so it has to be seen outside libghostty as well.
     var onPrimaryClick: (() -> Void)?
     /// The mouse as the program in the pane should hear it. Herdr strips the
-    /// pane's mouse modes out of the frames it sends, so libghostty never learns
-    /// that a program asked for the mouse and keeps every click for its own
-    /// selection. These go to herdr as `terminal.mouse` instead, which drops
-    /// them for a program that asked for nothing — so this cannot tell either,
-    /// and libghostty still gets every event too.
+    /// pane's mouse modes out of the frames it sends, so libghostty's own
+    /// reports cannot reach the program; these go to herdr as `terminal.mouse`
+    /// instead, which encodes them for the program's real mode and drops them
+    /// for a program that asked for nothing. libghostty still gets every event:
+    /// it is what decides, once the bridge has told it the program has the
+    /// mouse, whether a press is the program's or a selection.
     var onMouseReport: ((PaneControlChannel.MouseAction, PaneControlChannel.MouseButton, NSEvent) -> Void)?
     var onUpload: PaneUploadHandler?
 
@@ -153,8 +154,8 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         onPrimaryClick?()
         requestWindowFirstResponder()
         session.sendMousePosition(event)
-        session.sendMouseButton(.left, pressed: true, event: event)
-        if reports { reportPress(.left, event) }
+        let consumed = session.sendMouseButton(.left, pressed: true, event: event)
+        if reports, programTakes(consumed: consumed, event) { reportPress(.left, event) }
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -164,11 +165,18 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     }
 
     /// libghostty gets the right click first; the context menu is what happens
-    /// when the program in the pane does not want it.
+    /// when the program in the pane does not want it. Only libghostty can say
+    /// that it does — it consumes the press once the bridge has told it the
+    /// program has the mouse — so without that the right button stays the
+    /// menu's: reporting it blind would open a menu over every right click a
+    /// program wants.
     override func rightMouseDown(with event: NSEvent) {
+        let reports = reportsPress(event)
         requestWindowFirstResponder()
         session.sendMousePosition(event)
-        if !session.sendMouseButton(.right, pressed: true, event: event) {
+        if session.sendMouseButton(.right, pressed: true, event: event) {
+            if reports, session.isMouseCaptured { reportPress(.right, event) }
+        } else {
             presentContextMenu(with: event)
         }
     }
@@ -176,14 +184,15 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
     override func rightMouseUp(with event: NSEvent) {
         session.sendMousePosition(event)
         session.sendMouseButton(.right, pressed: false, event: event)
+        reportRelease(.right, event)
     }
 
     override func otherMouseDown(with event: NSEvent) {
         let reports = event.buttonNumber == 2 && reportsPress(event)
         requestWindowFirstResponder()
         session.sendMousePosition(event)
-        session.sendMouseButton(.other(Int(event.buttonNumber)), pressed: true, event: event)
-        if reports { reportPress(.middle, event) }
+        let consumed = session.sendMouseButton(.other(Int(event.buttonNumber)), pressed: true, event: event)
+        if reports, programTakes(consumed: consumed, event) { reportPress(.middle, event) }
     }
 
     override func otherMouseUp(with event: NSEvent) {
@@ -205,27 +214,34 @@ final class TerminalSurfaceView: NSView, @preconcurrency NSTextInputClient {
         if reportedButtons.contains(.left) { onMouseReport?(.drag, .left, event) }
     }
 
-    override func rightMouseDragged(with event: NSEvent) { session.sendMousePosition(event) }
+    override func rightMouseDragged(with event: NSEvent) {
+        session.sendMousePosition(event)
+        if reportedButtons.contains(.right) { onMouseReport?(.drag, .right, event) }
+    }
 
     override func otherMouseDragged(with event: NSEvent) {
         session.sendMousePosition(event)
         if event.buttonNumber == 2, reportedButtons.contains(.middle) { onMouseReport?(.drag, .middle, event) }
     }
 
-    /// Whether a press goes to the program, by ghostty's rules. Not a click that
-    /// only moves the keyboard here or brings the window forward: ghostty
-    /// swallows both, so clicking into a split never also clicks whatever is
-    /// under the pointer. And not with Shift held, which is how ghostty lets
-    /// the user select text over a program that has taken the mouse.
-    ///
-    /// The right button is never reported. libghostty answers it with the
-    /// context menu when the program has not taken the mouse, and nothing here
-    /// can know whether it has, so reporting it would put a menu over every
-    /// right click a program does want.
+    /// Whether a press may go to the program at all: not a click that only
+    /// moves the keyboard here or brings the window forward. ghostty swallows
+    /// both, so clicking into a split never also clicks whatever is under the
+    /// pointer.
     private func reportsPress(_ event: NSEvent) -> Bool {
-        guard onMouseReport != nil, !event.modifierFlags.contains(.shift) else { return false }
-        guard let window, NSApp.isActive, window.isKeyWindow else { return false }
+        guard onMouseReport != nil, let window, NSApp.isActive, window.isKeyWindow else { return false }
         return window.firstResponder === self
+    }
+
+    /// Whether the program wants this press, given whether libghostty consumed
+    /// it. Once the bridge has told libghostty the program has the mouse, that
+    /// is exactly libghostty's answer: it consumes a press it would report and
+    /// leaves one with Shift to selection, `mouse-shift-capture` included. A
+    /// herdr too old to say leaves libghostty never capturing, and then the
+    /// press goes to herdr anyway, which drops it for a program that did not
+    /// ask — minus Shift, ghostty's way of selecting over one that did.
+    private func programTakes(consumed: Bool, _ event: NSEvent) -> Bool {
+        session.isMouseCaptured ? consumed : !event.modifierFlags.contains(.shift)
     }
 
     private func reportPress(_ button: PaneControlChannel.MouseButton, _ event: NSEvent) {
