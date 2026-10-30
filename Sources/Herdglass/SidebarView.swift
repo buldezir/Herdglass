@@ -96,6 +96,9 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     var onCloseSpace: ((String) -> Void)?
     /// Return the keyboard after a row click, including an already-selected row.
     var onPointerInteraction: (() -> Void)?
+    /// A host was collapsed or expanded by the user. Its spaces leave or rejoin
+    /// the list the space keys count, so every hint below it moves.
+    var onCollapsedHostsChange: (() -> Void)?
 
     private static let cellIdentifier = NSUserInterfaceItemIdentifier("SidebarCell")
 
@@ -104,7 +107,9 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
     private let emptyLabel = NSTextField(labelWithString: "")
     private let addButton = NSButton()
     private var model = SidebarModel()
-    private var collapsedHosts: Set<String> = []
+    /// The hosts the user has folded away. Read by the window as well as here:
+    /// a space nobody can see does not get a key (`orderedSpaces`).
+    private(set) var collapsedHosts: Set<String> = []
     /// The row this view last selected itself. The outline view reports our own
     /// pushes through the same delegate callback as the user's clicks, and the
     /// id is the only thing that tells the two apart — a flag set around the
@@ -432,12 +437,14 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         guard let id = notification.userInfo?["NSObject"] as? String else { return }
-        collapsedHosts.insert(id)
+        if collapsedHosts.insert(id).inserted { onCollapsedHostsChange?() }
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
         guard let id = notification.userInfo?["NSObject"] as? String else { return }
-        collapsedHosts.remove(id)
+        // `apply` expands every host it did not find collapsed, and each of
+        // those lands here; only one that really was folded away is news.
+        if collapsedHosts.remove(id) != nil { onCollapsedHostsChange?() }
     }
 }
 

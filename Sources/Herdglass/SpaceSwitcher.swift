@@ -43,8 +43,39 @@ struct SpaceSwitcherModel {
         var current = false
     }
 
+    /// Where the window is along the list, which is where a walk along it
+    /// starts — this overlay's, and ⌥⌘↑/↓'s, which is the same walk landing
+    /// at every step.
+    enum Origin: Equatable {
+        /// On a tile: the space the window is showing.
+        case tile(Int)
+        /// Between two tiles, given as the first one below. The window is
+        /// still somewhere down the sidebar when its space is not a tile —
+        /// its host is collapsed, or the host row itself is selected — and a
+        /// step from there goes to a neighbour of that host rather than back
+        /// to an end of the list.
+        case between(Int)
+
+        /// The tile `offset` steps along from here, wrapping at both ends. From
+        /// between two tiles one step down is the tile below and one step up
+        /// the tile above, and no step at all is no tile.
+        func index(steppedBy offset: Int, count: Int) -> Int? {
+            guard count > 0 else { return nil }
+            let index: Int
+            switch self {
+            case .tile(let tile):
+                index = tile + offset
+            case .between(let below):
+                guard offset != 0 else { return nil }
+                index = offset > 0 ? below + offset - 1 : below + offset
+            }
+            return (index % count + count) % count
+        }
+    }
+
     var items: [Item] = []
-    var highlighted = 0
+    /// Nil when the overlay opened between two tiles and nothing has moved yet.
+    var highlighted: Int?
 }
 
 /// The gesture: what the overlay is showing, where the highlight sits, and what
@@ -60,8 +91,9 @@ final class SpaceSwitcher {
     /// only thing that gets this far is a hold with nothing after it.
     static let holdDuration: TimeInterval = 2
 
-    /// The spaces to show, asked for once, at the moment the overlay opens.
-    var spaces: (() -> [SpaceSwitcherModel.Item])?
+    /// The spaces to show and where the window is among them, asked for once,
+    /// at the moment the overlay opens.
+    var spaces: (() -> (items: [SpaceSwitcherModel.Item], origin: SpaceSwitcherModel.Origin)?)?
     /// The space the gesture landed on. Never the one it started from.
     var onCommit: ((SpaceSwitcherModel.Item) -> Void)?
 
@@ -73,7 +105,11 @@ final class SpaceSwitcher {
     /// and an index that moves under a held key commits a different space than
     /// the one the user was looking at.
     private var items: [SpaceSwitcherModel.Item] = []
-    private var highlighted = 0
+    private var origin = SpaceSwitcherModel.Origin.between(0)
+    /// Nil until a key moves, when the overlay opened without stepping on a
+    /// window whose space is not one of the tiles. Letting go of that lands
+    /// nowhere: a hold to look must never be what switches.
+    private var highlighted: Int?
     /// Whether letting go of ⌘ is what commits. True for both key routes, false
     /// when the menu item was clicked: there is then nothing held to let go of,
     /// so the overlay waits for ↩, ⎋ or a click instead.
@@ -95,15 +131,16 @@ final class SpaceSwitcher {
             move(by: offset)
             return
         }
-        let items = spaces?() ?? []
+        guard let (items, origin) = spaces?() else { return }
         // One space is not a choice: an overlay naming the space you are already
         // in, with no alternative beside it, is a flash of chrome rather than a
-        // switcher.
-        guard items.count > 1 else { return }
+        // switcher. One tile that is not where the window is still is one.
+        guard items.contains(where: { !$0.current }) else { return }
         self.items = items
+        self.origin = origin
         self.commitsOnRelease = commitsOnRelease
         isOpen = true
-        highlighted = wrap((items.firstIndex(where: \.current) ?? 0) + offset)
+        highlighted = origin.index(steppedBy: offset, count: items.count)
         view.isHidden = false
         apply()
     }
@@ -111,7 +148,7 @@ final class SpaceSwitcher {
     /// ← and →, which step one tile along the list.
     func move(by offset: Int) {
         guard isOpen else { return }
-        highlighted = wrap(highlighted + offset)
+        highlighted = (highlighted.map { .tile($0) } ?? origin).index(steppedBy: offset, count: items.count)
         apply()
     }
 
@@ -131,14 +168,16 @@ final class SpaceSwitcher {
     func move(rowsBy offset: Int) {
         guard isOpen, !items.isEmpty else { return }
         let columns = max(1, view.columns)
-        guard columns < items.count else {
+        // Between two tiles there is no column to keep yet, and the tile on
+        // either side is the nearest one that way.
+        guard let highlighted, columns < items.count else {
             move(by: offset)
             return
         }
         let rows = (items.count + columns - 1) / columns
         let column = highlighted % columns
         let row = highlighted / columns + offset
-        highlighted = min((row % rows + rows) % rows * columns + column, items.count - 1)
+        self.highlighted = min((row % rows + rows) % rows * columns + column, items.count - 1)
         apply()
     }
 
@@ -151,13 +190,15 @@ final class SpaceSwitcher {
 
     func commit() {
         guard isOpen else { return }
-        let item = items[highlighted]
+        let item = highlighted.map { items[$0] }
         close()
         // Landing on the space that is already showing is how the gesture says
         // "never mind" — holding ⌥⌘ to look at the list and letting go arrives
         // here. Pushing the selection again would take the keyboard off
         // whatever has it and tell the server about a move that did not happen.
-        guard !item.current else { return }
+        // Landing on nothing is the same answer from a window whose space is
+        // not a tile.
+        guard let item, !item.current else { return }
         onCommit?(item)
     }
 
@@ -227,11 +268,6 @@ final class SpaceSwitcher {
         view.isHidden = true
         // The items stay: the view reloads its tiles only when they change, so a
         // gesture that opens on the same spaces as the last one reuses them.
-    }
-
-    private func wrap(_ index: Int) -> Int {
-        guard !items.isEmpty else { return 0 }
-        return (index % items.count + items.count) % items.count
     }
 
     private func apply() {
@@ -416,7 +452,7 @@ final class SpaceSwitcherView: NSView {
         // The tiles say where each space is; the one line under them says what is
         // running in the space being pointed at, which is the thing that decides
         // whether it is the one wanted. A space with no tabs says so.
-        let item = model.items.indices.contains(model.highlighted) ? model.items[model.highlighted] : nil
+        let item = model.highlighted.flatMap { model.items.indices.contains($0) ? model.items[$0] : nil }
         caption.stringValue = item?.subtitle ?? ""
         caption.isHidden = caption.stringValue.isEmpty
     }

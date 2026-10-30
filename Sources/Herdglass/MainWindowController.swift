@@ -129,6 +129,12 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             guard let (connectionId, workspaceId) = Self.spaceRow(rowId) else { return }
             self?.confirmCloseSpace(connectionId, workspaceId)
         }
+        // Folding a host away renumbers every hint below it, and the keys have
+        // already moved: the rows have to say so now, not at the next snapshot.
+        sidebar.onCollapsedHostsChange = { [weak self] in
+            guard let self else { return }
+            self.sidebar.apply(self.buildSidebarModel())
+        }
     }
 
     private func wireTabBar() {
@@ -142,7 +148,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private func wireSwitcher() {
         // Asked at the moment the overlay opens, and not again: the list is the
         // gesture's, frozen for as long as it lasts.
-        switcher.spaces = { [weak self] in self?.switcherItems() ?? [] }
+        switcher.spaces = { [weak self] in self?.switcherItems() }
         switcher.onCommit = { [weak self] item in
             self?.selectSpace((host: item.hostId, space: item.spaceId))
         }
@@ -687,11 +693,39 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     ///
     /// A host that is remembered but not attached has no spaces and so is
     /// simply not in the list: stepping or counting past it must not dial it,
-    /// the way selecting its row would.
+    /// the way selecting its row would. Nor is a host the user has collapsed
+    /// in the sidebar: its spaces are rows nobody can see, and a hidden row
+    /// holding ⌥⌘1 put every space that *is* on screen a key further away.
     private var orderedSpaces: [(host: String, space: String)] {
         connections.connections.flatMap { connection in
-            connection.session.spaces.map { (host: connection.id, space: $0.workspaceId) }
+            sidebar.collapsedHosts.contains(connection.id)
+                ? []
+                : connection.session.spaces.map { (host: connection.id, space: $0.workspaceId) }
         }
+    }
+
+    /// Where the window is along `spaces`, which must be in sidebar order. Off
+    /// the list when the space on screen belongs to a collapsed host or no
+    /// space is selected, but still at a place in the sidebar: just below
+    /// every listed space of the hosts above the selected one.
+    private func walkOrigin(in spaces: [(host: String, space: String)]) -> SpaceSwitcherModel.Origin {
+        let host = connections.selectedConnectionId
+        let space = connections.selectedSession?.selectedSpace?.workspaceId
+        if let index = spaces.firstIndex(where: { $0.host == host && $0.space == space }) {
+            return .tile(index)
+        }
+        // With no host selected that is every host, and the walk steps in
+        // from whichever end it is heading away from.
+        let above = Set(connections.connections.prefix { $0.id != host }.map(\.id))
+        return .between(spaces.prefix { above.contains($0.host) }.count)
+    }
+
+    /// Whether ⌥⌘↑/↓ and the overlay have anywhere to go: a listed space that
+    /// is not the one on screen.
+    private var canWalkSpaces: Bool {
+        let spaces = orderedSpaces
+        if case .tile = walkOrigin(in: spaces) { return spaces.count > 1 }
+        return !spaces.isEmpty
     }
 
     /// Land on a space that may belong to a host other than the selected one,
@@ -716,14 +750,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             return
         }
         let spaces = orderedSpaces
-        guard !spaces.isEmpty else { return }
-        // With nothing selected yet, step in from the end the user is coming
-        // from rather than doing nothing.
-        let current = spaces.firstIndex {
-            $0.host == connections.selectedConnectionId
-                && $0.space == connections.selectedSession?.selectedSpace?.workspaceId
-        } ?? (offset > 0 ? -1 : 0)
-        selectSpace(spaces[(current + offset + spaces.count) % spaces.count])
+        guard let next = walkOrigin(in: spaces).index(steppedBy: offset, count: spaces.count) else { return }
+        selectSpace(spaces[next])
     }
 
     /// Closing a tab destroys its panes on the server, so ask first when there
@@ -889,7 +917,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         case #selector(selectNextTab), #selector(selectPreviousTab):
             return (session?.tabsInSelectedSpace.count ?? 0) > 1
         case #selector(selectNextSpace), #selector(selectPreviousSpace), #selector(showSpaceSwitcher(_:)):
-            return connections.connections.reduce(0) { $0 + $1.session.spaces.count } > 1
+            return canWalkSpaces
         default:
             return true
         }
@@ -1067,12 +1095,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // Asked once for the whole sidebar, so the setting cannot change halfway
         // down it and leave the hints starting at 4.
         let spaceKeys = SpaceKeys.isEnabled
-        // How many space rows are already above this host's, so the hints count
-        // down the sidebar exactly as `orderedSpaces` does. Both walk
-        // `connections.connections` in order and skip a host with no spaces, so
+        // The hints are read off `orderedSpaces`, the list the keys index, so
         // the nth hint and the nth key are the same row by construction rather
-        // than by two rules agreeing.
-        var rowsAbove = 0
+        // than by two rules agreeing — about hosts with no spaces, and about
+        // collapsed hosts, whose spaces draw no hint and take no number.
+        var positions: [String: Int] = [:]
+        if spaceKeys {
+            for (index, target) in orderedSpaces.enumerated() where SpaceKeys.positions.contains(index + 1) {
+                positions[Self.spaceRowId(target.host, target.space)] = index + 1
+            }
+        }
         for connection in connections.connections {
             let session = connection.session
             let unread = session.unreadPaneIds.count
@@ -1096,23 +1128,20 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             // spaces from 1 is what emptied the old prefixes out — three
             // attached hosts drew three columns of 1, 2, 3, and a digit that
             // repeats down the sidebar cannot be a key.
-            model.spaces[connection.id] = session.spaces.enumerated().map { index, space in
+            model.spaces[connection.id] = session.spaces.map { space in
                 let count = session.unreadCount(inSpace: space.workspaceId)
-                let row = rowsAbove + index
+                let id = Self.spaceRowId(connection.id, space.workspaceId)
                 return SidebarModel.Row(
-                    id: Self.spaceRowId(connection.id, space.workspaceId),
+                    id: id,
                     kind: .space,
                     title: session.title(ofSpace: space),
                     subtitle: spaceSubtitle(space, session: session),
                     status: session.effectiveStatus(ofSpace: space),
                     unread: count > 0,
                     badge: count,
-                    shortcut: spaceKeys && SpaceKeys.positions.contains(row + 1)
-                        ? SpaceKeys.display(row + 1)
-                        : nil
+                    shortcut: positions[id].map(SpaceKeys.display)
                 )
             }
-            rowsAbove += session.spaces.count
         }
 
         if let connection = connections.selected {
@@ -1153,9 +1182,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// overlay's order, the sidebar's order and the order ⌥⌘↑/↓ walk the same
     /// order by construction rather than by three rules agreeing. A space that
     /// has gone between the walk and the lookup is simply not a tile.
-    private func switcherItems() -> [SpaceSwitcherModel.Item] {
+    private func switcherItems() -> (items: [SpaceSwitcherModel.Item], origin: SpaceSwitcherModel.Origin) {
         let selectedSpace = connections.selectedSession?.selectedSpace?.workspaceId
-        return orderedSpaces.enumerated().compactMap { index, target in
+        let items = orderedSpaces.enumerated().compactMap { index, target -> SpaceSwitcherModel.Item? in
             guard
                 let connection = connections.connection(id: target.host),
                 let space = connection.session.spaces.first(where: { $0.workspaceId == target.space })
@@ -1177,6 +1206,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
                     && space.workspaceId == selectedSpace
             )
         }
+        // From the tiles rather than the walk, so a tile that went missing above
+        // cannot put the origin one off.
+        return (items, walkOrigin(in: items.map { (host: $0.hostId, space: $0.spaceId) }))
     }
 
     // MARK: - Tab bar model
