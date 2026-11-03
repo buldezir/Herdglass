@@ -12,6 +12,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     private let tabBar = TabBarView()
     private let content = SplitContainerView()
     private let splitController = SidebarSplitViewController()
+    /// The tab strip and the panes: the split's content item.
+    private let terminalArea = NSView()
     /// Behind-window blur for `background-blur`; hidden unless the config asks.
     private let blur = NSVisualEffectView()
     /// The spaces of every attached host, over the terminal, while ⌘` or a held
@@ -48,7 +50,7 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         window.subtitle = SessionController.State.disconnected.summary
         window.toolbarStyle = .unified
         window.titlebarSeparatorStyle = .automatic
-        window.contentViewController = buildSplitController()
+        window.contentViewController = buildRootController()
         window.toolbar = buildToolbar()
         window.contentMinSize = NSSize(width: 720, height: 420)
         // Restore where the user last left this window before falling back to
@@ -175,6 +177,53 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     // MARK: - Layout
 
+    /// The sidebar split, with the Files card and the spaces overlay over it.
+    ///
+    /// The card is not inside the split's content pane, and that is the fix for
+    /// more than its reach. In there its tree/editor split was pinned to the
+    /// pane's width, and the editor's holding priority tied with the sidebar's
+    /// (both `.defaultLow`), so a drag on the card's own divider was as likely
+    /// to be answered by the window's sidebar giving way as by the editor — and
+    /// it usually was. Pinned to the window's safe area instead, nothing about
+    /// the card's layout is a constraint the sidebar takes part in.
+    private func buildRootController() -> NSViewController {
+        let split = buildSplitController()
+        let root = NSViewController()
+        let container = NSView()
+        root.view = container
+        root.addChild(split)
+        for view in [split.view, files.view, switcher.view] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(view)
+        }
+        // The split to raw bounds, so the sidebar still reaches up under the
+        // toolbar; the card to the safe area, under the toolbar like the strip.
+        let guide = container.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            split.view.topAnchor.constraint(equalTo: container.topAnchor),
+            split.view.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            split.view.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            split.view.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            files.view.topAnchor.constraint(equalTo: guide.topAnchor),
+            files.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
+            files.view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            files.view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+        ])
+        // The spaces overlay is still drawn over the terminal area alone, but it
+        // is a sibling of the card so it can be summoned over it: picking a
+        // space from it is a switch, and a switch puts the card away. Its
+        // constraints reach into the split's content pane, which is in the
+        // hierarchy now that the split's view has loaded.
+        let terminalGuide = terminalArea.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            switcher.view.topAnchor.constraint(equalTo: terminalGuide.topAnchor),
+            switcher.view.bottomAnchor.constraint(equalTo: terminalGuide.bottomAnchor),
+            switcher.view.leadingAnchor.constraint(equalTo: terminalGuide.leadingAnchor),
+            switcher.view.trailingAnchor.constraint(equalTo: terminalGuide.trailingAnchor),
+        ])
+        return root
+    }
+
     private func buildSplitController() -> SidebarSplitViewController {
         let sidebarController = NSViewController()
         sidebarController.view = sidebar
@@ -196,15 +245,14 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         return splitController
     }
 
-    /// Tab strip on top, the tab's panes underneath, and the space switcher over
-    /// both when a held key asks for it.
+    /// Tab strip on top and the tab's panes underneath.
     private func buildTerminalArea() -> NSView {
-        let container = NSView()
+        let container = terminalArea
         blur.blendingMode = .behindWindow
         blur.material = .underWindowBackground
         blur.state = .active
         blur.isHidden = true
-        for view in [blur, tabBar, content, files.view, switcher.view] as [NSView] {
+        for view in [blur, tabBar, content] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -228,22 +276,6 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             content.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
             content.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
-        ])
-        // The safe area, like the strip and the panes: the overlay dims what it
-        // is a shortcut through, and the titlebar is not part of that. The Files
-        // card sits under the spaces overlay, which can still be summoned over
-        // it — picking a space moves what is behind the card, not the card.
-        NSLayoutConstraint.activate([
-            files.view.topAnchor.constraint(equalTo: guide.topAnchor),
-            files.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-            files.view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
-            files.view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
-        ])
-        NSLayoutConstraint.activate([
-            switcher.view.topAnchor.constraint(equalTo: guide.topAnchor),
-            switcher.view.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
-            switcher.view.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
-            switcher.view.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
         ])
         return container
     }
@@ -510,6 +542,15 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         if focusTerminal { focusTerminalArea() }
     }
 
+    /// Moving to another space, tab or pane puts the Files card away first, and
+    /// asks about an unsaved edit like every other way out of it; `body` is
+    /// the move, and a Cancel means it does not happen. The card covers the
+    /// sidebar and the strip, so what reaches here is the keyboard — ⌥⌘arrows,
+    /// ⌥⌘1…⌥⌘9, the spaces overlay, ⇧⌘arrows — and a notification.
+    private func leavingFiles(_ body: @escaping () -> Void) {
+        files.close(then: body)
+    }
+
     /// The keyboard to whatever is in front in the terminal area: the Files
     /// card while it is up — a pane under it would take every keystroke out of
     /// sight — and the active pane otherwise.
@@ -535,13 +576,17 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     @objc func jumpToAttention() {
         // Attention can be on a host the window is not showing; go there first.
-        if connections.selectedSession?.hasAttention != true,
-           let other = connections.firstConnectionNeedingAttention {
-            connections.select(other.id)
+        guard connections.hasAttention else { NSSound.beep(); return }
+        leavingFiles { [weak self] in
+            guard let self else { return }
+            if self.connections.selectedSession?.hasAttention != true,
+               let other = self.connections.firstConnectionNeedingAttention {
+                self.connections.select(other.id)
+            }
+            self.content.allowReattach()
+            guard self.connections.selectedSession?.jumpToAttention() != nil else { NSSound.beep(); return }
+            self.focusTerminalArea()
         }
-        content.allowReattach()
-        guard connections.selectedSession?.jumpToAttention() != nil else { NSSound.beep(); return }
-        focusTerminalArea()
     }
 
     /// Show the pane behind a notification: the host it belongs to, the space
@@ -552,10 +597,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard let connection = connections.connections.first(where: { $0.session.snapshot?.pane(paneId) != nil })
         else { return false }
         window?.makeKeyAndOrderFront(nil)
-        if connections.selectedConnectionId != connection.id {
-            connections.select(connection.id)
+        leavingFiles { [weak self] in
+            guard let self else { return }
+            if self.connections.selectedConnectionId != connection.id {
+                self.connections.select(connection.id)
+            }
+            self.select(focusTerminal: true) { $0.selectPane(paneId) }
         }
-        select(focusTerminal: true) { $0.selectPane(paneId) }
         return true
     }
 
@@ -649,10 +697,16 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         connections.selectedSession?.splitSelectedPane(.down)
     }
 
-    @objc func focusPaneLeft() { connections.selectedSession?.focusNeighbour(.left) }
-    @objc func focusPaneRight() { connections.selectedSession?.focusNeighbour(.right) }
-    @objc func focusPaneUp() { connections.selectedSession?.focusNeighbour(.up) }
-    @objc func focusPaneDown() { connections.selectedSession?.focusNeighbour(.down) }
+    @objc func focusPaneLeft() { focusNeighbour(.left) }
+    @objc func focusPaneRight() { focusNeighbour(.right) }
+    @objc func focusPaneUp() { focusNeighbour(.up) }
+    @objc func focusPaneDown() { focusNeighbour(.down) }
+
+    private func focusNeighbour(_ direction: PaneDirection) {
+        leavingFiles { [weak self] in
+            self?.connections.selectedSession?.focusNeighbour(direction)
+        }
+    }
 
     @objc func selectNextTab() { step(tabsBy: 1) }
     @objc func selectPreviousTab() { step(tabsBy: -1) }
@@ -670,7 +724,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         guard !tabs.isEmpty, let current = tabs.firstIndex(where: { $0.tabId == session.selectedTabId })
         else { return }
         let next = tabs[(current + offset + tabs.count) % tabs.count]
-        select(focusTerminal: true) { $0.selectTab(next.tabId) }
+        leavingFiles { [weak self] in
+            self?.select(focusTerminal: true) { $0.selectTab(next.tabId) }
+        }
     }
 
     /// The menu's way in. The key itself is the monitor's — a gesture the menu
@@ -748,8 +804,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
     /// Land on a space that may belong to a host other than the selected one,
     /// bringing the host selection with it.
     private func selectSpace(_ target: (host: String, space: String)) {
-        if target.host != connections.selectedConnectionId { connections.select(target.host) }
-        select(focusTerminal: true) { $0.selectSpace(target.space) }
+        leavingFiles { [weak self] in
+            guard let self else { return }
+            if target.host != self.connections.selectedConnectionId { self.connections.select(target.host) }
+            self.select(focusTerminal: true) { $0.selectSpace(target.space) }
+        }
     }
 
     /// Down the whole sidebar, not one folder of it: ⌥⌘↑ and ⌥⌘↓ walk every
@@ -894,17 +953,21 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let session = connections.selectedSession
-        // The card covers the tab strip and the panes, so nothing may act on
-        // them unseen — the spaces overlay's rule. Spaces and hosts stay
-        // reachable: they are the sidebar's, which the card leaves uncovered.
+        // The card covers the sidebar, the strip and the panes, so nothing may
+        // change them unseen — the spaces overlay's rule. Moving to another
+        // space, tab or pane is allowed, because it puts the card away first
+        // (`leavingFiles`). In the editor's text ⇧⌘arrows are the selection's —
+        // to the line's ends, to the file's — and a key equivalent is consumed
+        // before the text view sees the key, so there the split items stand
+        // aside rather than close the card on an attempt to select a line.
         if files.isOpen {
             switch menuItem.action {
             case #selector(newTab(_:)), #selector(closeTab(_:)),
-                 #selector(splitRight), #selector(splitDown),
-                 #selector(focusPaneLeft), #selector(focusPaneRight),
-                 #selector(focusPaneUp), #selector(focusPaneDown),
-                 #selector(selectNextTab), #selector(selectPreviousTab):
+                 #selector(splitRight), #selector(splitDown):
                 return false
+            case #selector(focusPaneLeft), #selector(focusPaneRight),
+                 #selector(focusPaneUp), #selector(focusPaneDown):
+                if files.isEditingText { return false }
             case #selector(closePane(_:)):
                 return true
             default:

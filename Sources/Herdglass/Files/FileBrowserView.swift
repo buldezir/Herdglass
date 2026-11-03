@@ -4,9 +4,9 @@ import AppKit
 /// a header, a banner for what went wrong, the host's folders on the left and
 /// the open file on the right.
 ///
-/// A view over the terminal area, like the spaces overlay and for the same
-/// reasons: one window, and the sidebar — which is still where hosts and
-/// spaces are picked — stays live beside it. Unlike the overlay it takes the
+/// A view over the whole window below the toolbar, sidebar included, rather
+/// than a panel — one window, and a panel would take key window from the
+/// monitors the spaces overlay needs. Unlike the overlay it takes the
 /// keyboard, because it has a text view in it.
 @MainActor
 final class FileBrowserView: NSView {

@@ -65,10 +65,12 @@ final class FileNode: NSObject {
 ///
 /// The card is anchored to what it was opened on — a host and the folder the
 /// selected pane was in — the way a file drop belongs to the pane it started
-/// in. Picking another space or host while it is up changes what is behind
-/// the card, not the card: a document with unsaved edits must keep saving to
-/// the host it came from. Nothing about the card is a pane, a tab or a split;
-/// it sits over the terminal area and owns nothing Herdr does.
+/// in. It covers the sidebar as well as the terminal area, and moving to
+/// another space, tab or pane puts it away (asking first about an unsaved
+/// edit) rather than changing what is behind it: a card left up over a space
+/// it was not opened on is a document that saves to a host nobody is looking
+/// at. Nothing about the card is a pane, a tab or a split; it owns nothing
+/// Herdr does.
 ///
 /// It never hides with unsaved changes — every way out asks first — so what
 /// it keeps between openings is only the tree, and only for the same host and
@@ -139,6 +141,13 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         return responder.isDescendant(of: view)
     }
 
+    /// The keyboard is in the editor's text, where ⇧⌘ and ⌥ arrows select and
+    /// move by word and line rather than reaching the window's menu.
+    var isEditingText: Bool {
+        guard isOpen, !view.editor.isHidden, let responder = view.window?.firstResponder as? NSView else { return false }
+        return responder.isDescendant(of: view.editor)
+    }
+
     func performFind(_ sender: Any?) {
         guard canFind else { return }
         view.editor.performFind(sender)
@@ -200,13 +209,20 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         }
     }
 
-    /// ⎋, ⌘J, ⌘W, the close button, a click on the scrim: put the card away,
-    /// after asking about unsaved changes.
-    func close() {
-        guard isOpen else { return }
+    /// ⎋, ⌘J, ⌘W, the close button, a click on the scrim, and every switch to
+    /// another space, tab or pane: put the card away, after asking about
+    /// unsaved changes. `next` runs once the card is down, and not at all when
+    /// the user cancels — a switch the user said no to does not happen behind
+    /// the card either. With the card already down it runs at once.
+    func close(then next: (() -> Void)? = nil) {
+        guard isOpen else {
+            next?()
+            return
+        }
         confirmDiscard { [weak self] proceed in
-            guard proceed else { return }
-            self?.finishClose()
+            guard proceed, let self else { return }
+            if self.isOpen { self.finishClose() }
+            next?()
         }
     }
 
