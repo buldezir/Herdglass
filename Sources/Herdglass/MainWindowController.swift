@@ -179,13 +179,9 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
 
     /// The sidebar split, with the Files card and the spaces overlay over it.
     ///
-    /// The card is not inside the split's content pane, and that is the fix for
-    /// more than its reach. In there its tree/editor split was pinned to the
-    /// pane's width, and the editor's holding priority tied with the sidebar's
-    /// (both `.defaultLow`), so a drag on the card's own divider was as likely
-    /// to be answered by the window's sidebar giving way as by the editor — and
-    /// it usually was. Pinned to the window's safe area instead, nothing about
-    /// the card's layout is a constraint the sidebar takes part in.
+    /// The card is not inside the split's content pane, so it covers the
+    /// sidebar too, and nothing about its layout is a constraint the sidebar
+    /// takes part in.
     private func buildRootController() -> NSViewController {
         let split = buildSplitController()
         let root = NSViewController()

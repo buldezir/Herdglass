@@ -144,7 +144,15 @@ final class FileBrowserView: NSView {
         split.dividerStyle = .thin
         split.addArrangedSubview(treeScroll)
         split.addArrangedSubview(editorArea)
-        split.setHoldingPriority(.defaultHigh, forSubviewAt: 0)
+        // Both holds stay under a divider drag (`dragThatCannotResizeWindow`,
+        // 490), or the drag cannot win against them. A tree held at
+        // `.defaultHigh` could not change width at all: the divider kept up
+        // with the pointer only by moving the whole card, which inside the
+        // terminal pane meant the window's sidebar giving way, and over the
+        // whole window meant nothing moving. The tree holds a little harder
+        // than the editor, so a window resize goes to the editor — the same
+        // 260 over 250 an `NSSplitViewItem` sidebar uses.
+        split.setHoldingPriority(.init(rawValue: 260), forSubviewAt: 0)
         split.setHoldingPriority(.defaultLow, forSubviewAt: 1)
         treeScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         editorArea.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
