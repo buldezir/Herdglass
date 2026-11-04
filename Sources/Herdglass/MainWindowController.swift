@@ -120,6 +120,10 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
             }
             self.select(focusTerminal: source == .pointer) { $0.selectSpace(workspaceId) }
         }
+        // Selecting a parked host dials it, but a host whose dial failed is
+        // already selected and a click on it posts no selection change at all:
+        // the click itself is the retry.
+        sidebar.onClickHost = { [weak self] id in self?.connections.redialIfDown(id) }
         sidebar.onAddHost = { [weak self] in self?.showConnectSheet() }
         sidebar.onReconnectHost = { [weak self] id in self?.connections.reconnect(id) }
         sidebar.onDisconnectHost = { [weak self] id in self?.connections.disconnect(id) }

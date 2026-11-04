@@ -125,6 +125,19 @@ final class ConnectionsController: SessionControllerDelegate {
         }
     }
 
+    /// Dial a host the user clicked if it is down — parked or failed — and
+    /// leave one that is up or already dialling alone.
+    func redialIfDown(_ id: String) {
+        guard let connection = connection(id: id) else { return }
+        switch connection.session.state {
+        case .disconnected, .failed:
+            connection.session.connect(connection.target)
+            delegate?.connectionsDidChange(self)
+        case .connecting, .connected, .reconnecting:
+            break
+        }
+    }
+
     /// Detach a host because the user asked. That is also what takes it off the
     /// list of hosts the next launch dials — `disconnectAll` deliberately does
     /// not, because a window closing is not the user saying "leave this one

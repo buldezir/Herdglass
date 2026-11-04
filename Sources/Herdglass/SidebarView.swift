@@ -67,6 +67,10 @@ struct SidebarModel {
 private final class SidebarOutlineView: NSOutlineView {
     private(set) var contextItemId: String?
     var onPointerInteraction: (() -> Void)?
+    /// The row a click landed on, after the outline has handled it — including
+    /// a row that was already selected, which posts no selection change. A
+    /// click on the disclosure triangle is not a click on the row.
+    var onRowClick: ((String) -> Void)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let row = row(at: convert(event.locationInWindow, from: nil))
@@ -76,8 +80,14 @@ private final class SidebarOutlineView: NSOutlineView {
 
     override func mouseDown(with event: NSEvent) {
         let clickedRow = row(at: convert(event.locationInWindow, from: nil))
+        let point = convert(event.locationInWindow, from: nil)
+        let onDisclosure = clickedRow >= 0 && frameOfOutlineCell(atRow: clickedRow).contains(point)
         super.mouseDown(with: event)
-        if clickedRow >= 0 { onPointerInteraction?() }
+        guard clickedRow >= 0 else { return }
+        onPointerInteraction?()
+        if !onDisclosure, clickedRow < numberOfRows, let id = item(atRow: clickedRow) as? String {
+            onRowClick?(id)
+        }
     }
 }
 
@@ -93,6 +103,10 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
 
     var onSelectHost: ((String, SelectionSource) -> Void)?
     var onSelectSpace: ((String, SelectionSource) -> Void)?
+    /// A host row was clicked, whether or not that moved the selection. A click
+    /// on a host that is not attached is the user asking for it to be dialled,
+    /// and re-clicking the row already selected must ask too.
+    var onClickHost: ((String) -> Void)?
     var onAddHost: (() -> Void)?
     var onReconnectHost: ((String) -> Void)?
     var onDisconnectHost: ((String) -> Void)?
@@ -144,6 +158,10 @@ final class SidebarView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate 
             // Adopt the clicked selection before handing the keyboard over.
             self.reportSelection(source: .pointer)
             self.onPointerInteraction?()
+        }
+        outline.onRowClick = { [weak self] id in
+            guard let self, self.model.isHost(id) else { return }
+            self.onClickHost?(id)
         }
         outline.menu = buildContextMenu()
 
