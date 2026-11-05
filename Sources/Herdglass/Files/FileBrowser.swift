@@ -82,6 +82,7 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     let view = FileBrowserView()
     private(set) var isOpen = false
+    private lazy var search = FileSearch(field: view.searchField, table: view.results, status: view.searchStatus)
 
     private struct Document {
         var path: String
@@ -109,6 +110,19 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// that listed the folder again, whose reload listed it again: the tree
     /// redrew itself for as long as a folder was open.
     private var isRedrawingListing = false
+    /// The root the search's listing is of, and whether it was taken since the
+    /// card last opened. A search lists the root once per opening (and again
+    /// on the reload button), not once per keystroke and not once per card:
+    /// files an agent wrote since the last opening are findable, and the
+    /// listing — the one job here that can take seconds — is paid only by a
+    /// search.
+    private var indexRoot: String?
+    private var indexIsCurrent = false
+    private var isIndexing = false
+    private var indexGeneration = 0
+    /// A file opened with Return or a double click from the search takes the
+    /// keyboard once it is on screen.
+    private var focusEditorWhenShown = false
 
     override init() {
         super.init()
@@ -122,6 +136,21 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         view.onSave = { [weak self] in self?.save() }
         view.onReload = { [weak self] in self?.reload() }
         view.editor.onCancel = { [weak self] in self?.close() }
+        search.onOpen = { [weak self] path, focusEditor in self?.openMatch(path, focusEditor: focusEditor) }
+        search.onNeedsIndex = { [weak self] in self?.indexIfNeeded() }
+        search.onDismiss = { [weak self] in self?.close() }
+        search.onActiveChange = { [weak self] active in
+            guard let self else { return }
+            self.view.showSearchResults(active)
+            if !active { self.selectDocumentRow() }
+        }
+        search.onLeaveToTree = { [weak self] in
+            guard let self else { return }
+            self.view.window?.makeFirstResponder(self.view.outline)
+            if self.view.outline.selectedRow < 0, self.view.outline.numberOfRows > 0 {
+                self.view.outline.selectRowIndexes([0], byExtendingSelection: false)
+            }
+        }
         view.editor.onChange = { [weak self] in
             guard let self else { return }
             self.changeCount += 1
@@ -141,11 +170,12 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         return responder.isDescendant(of: view)
     }
 
-    /// The keyboard is in the editor's text, where ⇧⌘ and ⌥ arrows select and
-    /// move by word and line rather than reaching the window's menu.
+    /// The keyboard is in text — the editor's, or the search field's — where
+    /// ⇧⌘ and ⌥ arrows select and move by word and line rather than reaching
+    /// the window's menu.
     var isEditingText: Bool {
-        guard isOpen, !view.editor.isHidden, let responder = view.window?.firstResponder as? NSView else { return false }
-        return responder.isDescendant(of: view.editor)
+        guard isOpen, let responder = view.window?.firstResponder as? NSView, responder.isDescendant(of: view) else { return false }
+        return responder is NSText || (!view.editor.isHidden && responder.isDescendant(of: view.editor))
     }
 
     func performFind(_ sender: Any?) {
@@ -158,6 +188,12 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         guard isOpen, let window = view.window else { return }
         if let responder = window.firstResponder as? NSView, responder.isDescendant(of: view) { return }
         window.makeFirstResponder(view.outline)
+    }
+
+    /// ⌘P: the search field, with the card put up first when it is down.
+    func beginSearch() {
+        guard isOpen else { return }
+        search.focusField()
     }
 
     // MARK: - Opening and closing
@@ -177,10 +213,12 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         let sameHost = self.session === session && self.hostName == hostName
         self.session = session
         self.hostName = hostName
+        indexIsCurrent = false
         if !sameHost {
             root = nil
             rootNode = nil
             view.outline.reloadData()
+            forgetIndex()
         }
         updateHeader()
         view.window?.makeFirstResponder(view.outline)
@@ -201,8 +239,12 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
                     self.rootNode = node
                     self.view.outline.reloadData()
                     self.load(node)
+                    if self.indexRoot != root.path { self.forgetIndex() }
                 }
                 self.updateHeader()
+                // ⌘P on a closed card types into the field before the root
+                // is known; the listing that search needs starts now.
+                if self.search.isActive { self.indexIfNeeded() }
             case .failure(let error):
                 self.view.showBanner(error.localizedDescription)
             }
@@ -233,6 +275,8 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         document = nil
         changeCount = 0
         savedChangeCount = 0
+        focusEditorWhenShown = false
+        search.clear()
         view.isHidden = true
         view.hideBanner()
         view.showPlaceholder("Select a file")
@@ -267,6 +311,54 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
                 completion(false)
             }
         }
+    }
+
+    // MARK: - Search
+
+    /// List the root for the search, unless the listing there is of this root
+    /// and from this opening. Runs on the card's serial SSH queue like every
+    /// other job, so a slow listing holds up a folder expansion behind it —
+    /// which is why it waits for a search to ask for it.
+    private func indexIfNeeded() {
+        guard let root, let session, !isIndexing, !(indexRoot == root.path && indexIsCurrent) else { return }
+        isIndexing = true
+        indexGeneration += 1
+        let generation = indexGeneration
+        let path = root.path
+        search.setIndexing()
+        session.files({ try $0.index(path) }) { [weak self] result in
+            guard let self, generation == self.indexGeneration else { return }
+            self.isIndexing = false
+            switch result {
+            case .success(let listing):
+                self.indexRoot = path
+                self.indexIsCurrent = true
+                self.search.setIndex(listing)
+            case .failure(let error):
+                self.search.setIndexFailed(error.localizedDescription.components(separatedBy: "\n").last ?? "Could not list the files.")
+            }
+        }
+    }
+
+    /// Another host or another root: a listing of the old one, finished or
+    /// still coming, would offer files that are not under this root.
+    private func forgetIndex() {
+        indexGeneration += 1
+        indexRoot = nil
+        indexIsCurrent = false
+        isIndexing = false
+        search.reset()
+    }
+
+    /// A match from the search, by its path under the root.
+    private func openMatch(_ relative: String, focusEditor: Bool) {
+        guard let root else { return }
+        let path = root.path == "/" ? "/" + relative : root.path + "/" + relative
+        if path == document?.path {
+            if focusEditor, !view.editor.isHidden { view.window?.makeFirstResponder(view.editor.focusTarget) }
+            return
+        }
+        openFile(path, name: (relative as NSString).lastPathComponent, focusEditor: focusEditor)
     }
 
     // MARK: - Files
@@ -316,20 +408,25 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
 
     private func open(_ node: FileNode) {
         guard node.kind == .file, node.path != document?.path else { return }
+        openFile(node.path, name: node.name, focusEditor: false)
+    }
+
+    private func openFile(_ path: String, name: String, focusEditor: Bool) {
         confirmDiscard { [weak self] proceed in
             guard let self else { return }
             guard proceed else {
                 self.selectDocumentRow()
                 return
             }
-            self.read(node.path, name: node.name)
+            self.read(path, name: name, focusEditor: focusEditor)
         }
     }
 
-    private func read(_ path: String, name: String) {
+    private func read(_ path: String, name: String, focusEditor: Bool = false) {
         guard let session else { return }
         openGeneration += 1
         let generation = openGeneration
+        focusEditorWhenShown = focusEditor
         document = nil
         changeCount = 0
         savedChangeCount = 0
@@ -370,6 +467,10 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
         document = Document(path: path, name: name, token: contents.token)
         view.editor.load(text, language: SyntaxLanguage.detect(filename: name, firstLine: firstLine), editable: contents.writable)
         view.showEditor()
+        if focusEditorWhenShown {
+            focusEditorWhenShown = false
+            view.window?.makeFirstResponder(view.editor.focusTarget)
+        }
         if !contents.writable { view.showBanner("Read-only: you do not have permission to write \(name) on \(hostName).") }
     }
 
@@ -420,6 +521,8 @@ final class FileBrowser: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegat
     /// read again unless that would throw away an edit.
     func reload() {
         if let rootNode { refresh(rootNode) }
+        indexIsCurrent = false
+        if search.isActive { indexIfNeeded() }
         guard let document, !isDirty else { return }
         read(document.path, name: document.name)
     }

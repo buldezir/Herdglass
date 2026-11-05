@@ -242,6 +242,10 @@ enum MainMenu {
         // binds nothing to it, and a `keybind` that lands on it still takes it
         // (`surrenderShortcuts`). The card itself is View ▸ Show Files.
         menu.addItem(withTitle: "Save", action: #selector(MainWindowController.saveFile(_:)), keyEquivalent: "s")
+        // The Files card's fuzzy search, on the key every editor's quick-open
+        // is on. Nothing in this app prints, and ghostty binds nothing to ⌘P;
+        // a `keybind` that lands on it still takes it (`surrenderShortcuts`).
+        menu.addItem(withTitle: "Go to File…", action: #selector(MainWindowController.goToFile(_:)), keyEquivalent: "p")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Reconnect", action: #selector(MainWindowController.reconnect), keyEquivalent: "r")
         menu.addItem(withTitle: "Disconnect", action: #selector(MainWindowController.disconnect), keyEquivalent: "")

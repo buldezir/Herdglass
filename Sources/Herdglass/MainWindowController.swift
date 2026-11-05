@@ -639,6 +639,13 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         )
     }
 
+    /// ⌘P: find a file by name in the Files card, putting the card up first
+    /// on the same terms as ⌘J.
+    @objc func goToFile(_ sender: Any?) {
+        if !files.isOpen { toggleFiles(sender) }
+        files.beginSearch()
+    }
+
     @objc func saveFile(_ sender: Any?) {
         files.save()
     }
@@ -956,10 +963,11 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         // The card covers the sidebar, the strip and the panes, so nothing may
         // change them unseen — the spaces overlay's rule. Moving to another
         // space, tab or pane is allowed, because it puts the card away first
-        // (`leavingFiles`). In the editor's text ⇧⌘arrows are the selection's —
-        // to the line's ends, to the file's — and a key equivalent is consumed
-        // before the text view sees the key, so there the split items stand
-        // aside rather than close the card on an attempt to select a line.
+        // (`leavingFiles`). In text — the editor's or the search field's —
+        // ⇧⌘arrows are the selection's, to the line's ends and the file's, and
+        // a key equivalent is consumed before the text view sees the key, so
+        // there the split items stand aside rather than close the card on an
+        // attempt to select a line.
         if files.isOpen {
             switch menuItem.action {
             case #selector(newTab(_:)), #selector(closeTab(_:)),
@@ -977,6 +985,8 @@ final class MainWindowController: NSWindowController, NSWindowDelegate, NSToolba
         switch menuItem.action {
         case #selector(toggleFiles(_:)):
             menuItem.title = files.isOpen ? "Hide Files" : "Show Files"
+            return files.isOpen || session?.state.isConnected == true
+        case #selector(goToFile(_:)):
             return files.isOpen || session?.state.isConnected == true
         case #selector(saveFile(_:)):
             return files.isOpen && files.canSave

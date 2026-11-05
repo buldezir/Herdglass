@@ -29,6 +29,29 @@ public struct RemoteDirectoryListing: Equatable, Sendable {
     public var truncated: Bool
 }
 
+/// Every file under a root, for the Files card's fuzzy search.
+public struct RemoteFileIndex: Equatable, Sendable {
+    /// What listed the files, in the order `RemoteFiles.index` tries them.
+    public enum Source: String, Sendable, CaseIterable {
+        case fd
+        case rg
+        case git
+        case find
+    }
+
+    /// Relative to the root, without a leading `./`, each once.
+    public var paths: [String]
+    /// The listing ran past the byte cap and the rest was dropped.
+    public var truncated: Bool
+    public var source: Source
+
+    public init(paths: [String], truncated: Bool, source: Source) {
+        self.paths = paths
+        self.truncated = truncated
+        self.source = source
+    }
+}
+
 public struct RemoteFileContents: Sendable {
     /// The file's bytes; nil when it is over the read limit and was not sent.
     public var data: Data?
@@ -117,6 +140,94 @@ public struct RemoteFiles: Sendable {
         try check(result, action: "List \(directory)")
         return Self.parseListing(try decode(result.stdout))
     }
+
+    /// Every file under `root`, for the fuzzy search, listed by the best tool
+    /// the host has: `fd` (`fdfind` on Debian), else `rg --files`, else `git
+    /// ls-files` inside a repository, else `find`. The first two are the point —
+    /// they honour every `.gitignore` under the root, a repository's own *and*
+    /// those of the repositories inside a folder that is not one, so a home
+    /// directory's projects arrive without their `build/` and `node_modules`.
+    /// Neither is installed on a host that has only herdr, so `git` and `find`
+    /// stay behind them, and `find` can only prune by name.
+    ///
+    /// What each one leaves out is the same: `.git`; outside a repository
+    /// hidden folders (hidden files stay — `.env` is something one opens) and
+    /// `node_modules`, and in the home directory `~/Library`. Inside one,
+    /// hidden folders git tracks (`.github`) are listed, since `.gitignore`
+    /// already says what is noise there. Those folders are where the hundreds
+    /// of thousands of files are, and none of them is a file anyone means to
+    /// open from here.
+    ///
+    /// The non-interactive PATH an SSH command gets has no Homebrew, cargo or
+    /// Nix in it, so their usual homes are searched after it, the way the
+    /// bootstrap looks for herdr. `using` skips the choice, for the tests.
+    ///
+    /// Capped by bytes rather than by count, so the host stops writing — `head`
+    /// closes the pipe and the lister dies of it — instead of the cap being
+    /// applied here after everything has crossed the link.
+    public func index(
+        _ root: String,
+        using source: RemoteFileIndex.Source? = nil,
+        byteLimit: Int = RemoteFiles.indexByteLimit
+    ) throws -> RemoteFileIndex {
+        try validate(root)
+        let result = run("""
+        cd -- \(root.shellEscaped) || exit 3
+        PATH="$PATH:$HOME/.local/bin:$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin"
+        PATH="$PATH:/home/linuxbrew/.linuxbrew/bin:$HOME/.nix-profile/bin:/run/current-system/sw/bin"
+        PATH="$PATH:$HOME/.local/share/mise/shims"
+        fd=$(command -v fd || command -v fdfind || true)
+        rg=$(command -v rg || true)
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1 </dev/null; then repo=1; else repo=; fi
+        use=\(source?.rawValue ?? "")
+        if [ -z "$use" ]; then
+          if [ -n "$fd" ]; then use=fd
+          elif [ -n "$rg" ]; then use=rg
+          elif [ -n "$repo" ]; then use=git
+          else use=find
+          fi
+        fi
+        case "$use" in
+          fd) [ -n "$fd" ] || { echo "fd is not installed." >&2; exit 5; } ;;
+          rg) [ -n "$rg" ] || { echo "rg is not installed." >&2; exit 5; } ;;
+          git) [ -n "$repo" ] || { echo "Not a git repository." >&2; exit 5; } ;;
+        esac
+        athome=; [ "$PWD" = "$HOME" ] && athome=1
+        list() {
+          case "$use" in
+            fd)
+              set -- --exclude .git
+              [ -n "$repo" ] || set -- "$@" --exclude '.*/' --exclude 'node_modules/'
+              [ -z "$athome" ] || set -- "$@" --exclude '/Library/'
+              "$fd" --type f --hidden --no-follow --color never --print0 "$@" ;;
+            rg)
+              set -- -g '!.git/'
+              [ -n "$repo" ] || set -- "$@" -g '!.*/' -g '!node_modules/'
+              [ -z "$athome" ] || set -- "$@" -g '!/Library/'
+              "$rg" --files --hidden --no-follow --no-messages --null "$@" ;;
+            git)
+              git ls-files -z --cached --others --exclude-standard ;;
+            find)
+              set -- -name '.*' -o -name node_modules
+              [ -z "$athome" ] || set -- "$@" -o -path ./Library
+              find . -xdev -mindepth 1 -type d \\( "$@" \\) -prune -o -type f -print0 ;;
+          esac
+        }
+        printf '%s\\n' "$use"
+        list </dev/null 2>/dev/null | head -c \(byteLimit + 1) | base64
+        """, 30)
+        try check(result, action: "List the files under \(root)")
+        let lines = result.stdout.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let used = lines.first.flatMap({ RemoteFileIndex.Source(rawValue: String($0)) }) else {
+            throw Self.failure("The host returned an invalid file listing.")
+        }
+        let listing = try decode(lines.count > 1 ? String(lines[1]) : "")
+        return Self.parseIndex(listing, byteLimit: byteLimit, source: used)
+    }
+
+    /// About 130,000 paths of a typical length, which is several times any
+    /// repository the search is for, and still only a few seconds over SSH.
+    public static let indexByteLimit = 8 << 20
 
     public func read(_ path: String, limit: Int = RemoteFiles.readLimit) throws -> RemoteFileContents {
         try validate(path)
@@ -215,6 +326,27 @@ public struct RemoteFiles: Sendable {
             return first.name.localizedStandardCompare(second.name) == .orderedAscending
         }
         return RemoteDirectoryListing(entries: entries, truncated: truncated)
+    }
+
+    /// NUL-separated paths. One byte past `byteLimit` says the host had more,
+    /// and the record that byte belongs to was cut somewhere in the middle, so
+    /// everything after the last NUL inside the limit goes.
+    static func parseIndex(_ data: Data, byteLimit: Int, source: RemoteFileIndex.Source) -> RemoteFileIndex {
+        var data = data
+        let truncated = data.count > byteLimit
+        if truncated {
+            let kept = data.prefix(byteLimit)
+            data = kept.lastIndex(of: 0).map { Data(kept[..<$0]) } ?? Data()
+        }
+        var seen = Set<String>()
+        var paths: [String] = []
+        for record in data.split(separator: 0) {
+            guard var path = String(data: Data(record), encoding: .utf8) else { continue }
+            if path.hasPrefix("./") { path.removeFirst(2) }
+            guard !path.isEmpty, seen.insert(path).inserted else { continue }
+            paths.append(path)
+        }
+        return RemoteFileIndex(paths: paths, truncated: truncated, source: source)
     }
 
     static func parseRead(_ output: String, limit: Int) throws -> RemoteFileContents {

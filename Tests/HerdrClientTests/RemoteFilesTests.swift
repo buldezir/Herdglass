@@ -19,6 +19,36 @@ private let throughZsh = RemoteFiles { script, timeout in
     ProcessRunner.run(executable: "/bin/zsh", arguments: ["-c", "bash -s"], extraEnv: [:], stdin: script, timeout: timeout)
 }
 
+/// `HERDGLASS_TEST_TOOLS` names a folder of extra binaries — `fd`, `rg` —
+/// to test the listers against without installing them; without it, only
+/// what is installed is tested.
+private let toolsPath: String = {
+    let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+    guard let tools = ProcessInfo.processInfo.environment["HERDGLASS_TEST_TOOLS"], !tools.isEmpty else { return path }
+    return tools + ":" + path
+}()
+
+private let withTools = RemoteFiles { script, timeout in
+    ProcessRunner.run(executable: "/bin/zsh", arguments: ["-c", "bash -s"], extraEnv: ["PATH": toolsPath], stdin: script, timeout: timeout)
+}
+
+/// The listers this machine can run, `git` and `find` always.
+private let listers: [RemoteFileIndex.Source] = RemoteFileIndex.Source.allCases.filter { source in
+    switch source {
+    case .git, .find:
+        return true
+    case .fd, .rg:
+        let probe = source == .fd ? "command -v fd || command -v fdfind" : "command -v rg"
+        let found = ProcessRunner.run(executable: "/bin/bash", arguments: ["-c", probe], extraEnv: ["PATH": toolsPath], timeout: 5)
+        return found.terminationStatus == 0
+    }
+}
+
+private func gitInit(_ folder: URL) throws {
+    let initialised = ProcessRunner.run(executable: "/usr/bin/git", arguments: ["init", "-q", folder.path], extraEnv: [:], timeout: 10)
+    try #require(initialised.terminationStatus == 0)
+}
+
 private func inode(_ url: URL) throws -> Int {
     try (FileManager.default.attributesOfItem(atPath: url.path)[.systemFileNumber] as? NSNumber)?.intValue ?? -1
 }
@@ -169,6 +199,106 @@ struct RemoteFilesTests {
         let home = try throughZsh.resolveRoot(from: nil)
         #expect(home.home.hasPrefix("/"))
         #expect(try throughZsh.resolveRoot(from: root.appendingPathComponent("gone").path).home == home.home)
+    }
+
+    @Test(arguments: listers.filter { $0 != .git })
+    func indexOutsideARepositorySkipsHiddenFoldersAndNodeModules(_ source: RemoteFileIndex.Source) throws {
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fm = FileManager.default
+        for folder in ["src/deep", ".cache", "node_modules/pkg"] {
+            try fm.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        for file in ["a.txt", ".env", "src/deep/quote ' $(x).swift", "src/new\nline", ".cache/blob", "node_modules/pkg/index.js"] {
+            try Data("x".utf8).write(to: root.appendingPathComponent(file))
+        }
+        let index = try withTools.index(root.path, using: source)
+        #expect(index.source == source)
+        #expect(!index.truncated)
+        #expect(Set(index.paths) == ["a.txt", ".env", "src/deep/quote ' $(x).swift", "src/new\nline"])
+    }
+
+    /// Ignored files stay out, tracked hidden folders stay in, `.git` stays out.
+    @Test(arguments: listers.filter { $0 != .find })
+    func indexInsideARepositoryIsWhatGitKnowsAbout(_ source: RemoteFileIndex.Source) throws {
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try gitInit(root)
+        for folder in ["build", ".github"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: false)
+        }
+        try Data("build/\n".utf8).write(to: root.appendingPathComponent(".gitignore"))
+        for file in ["build/out.o", "main.c", ".github/ci.yml"] {
+            try Data("x".utf8).write(to: root.appendingPathComponent(file))
+        }
+        #expect(Set(try withTools.index(root.path, using: source).paths) == [".gitignore", "main.c", ".github/ci.yml"])
+    }
+
+    /// What `fd` and `rg` are for: a folder that is not a repository, holding
+    /// one, lists that repository without what its `.gitignore` leaves out —
+    /// which `find` can only do by name.
+    @Test(arguments: listers.filter { $0 == .fd || $0 == .rg })
+    func indexHonoursTheIgnoresOfRepositoriesUnderTheRoot(_ source: RemoteFileIndex.Source) throws {
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("project")
+        try FileManager.default.createDirectory(at: project.appendingPathComponent("dist"), withIntermediateDirectories: true)
+        try gitInit(project)
+        try Data("dist/\n".utf8).write(to: project.appendingPathComponent(".gitignore"))
+        for file in ["notes.md", "project/app.js", "project/dist/bundle.js"] {
+            try Data("x".utf8).write(to: root.appendingPathComponent(file))
+        }
+        #expect(Set(try withTools.index(root.path, using: source).paths) == ["notes.md", "project/.gitignore", "project/app.js"])
+    }
+
+    /// `~/Library` is left out of the home directory only, not every folder
+    /// that happens to be called that.
+    @Test(arguments: listers.filter { $0 != .git })
+    func indexLeavesOutLibraryOnlyInTheHomeDirectory(_ source: RemoteFileIndex.Source) throws {
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for folder in ["Library", "app/Library"] {
+            try FileManager.default.createDirectory(at: root.appendingPathComponent(folder), withIntermediateDirectories: true)
+        }
+        for file in ["Library/cache.db", "app/Library/kept.swift"] {
+            try Data("x".utf8).write(to: root.appendingPathComponent(file))
+        }
+        let atHome = RemoteFiles { script, timeout in
+            ProcessRunner.run(executable: "/bin/zsh", arguments: ["-c", "bash -s"], extraEnv: ["PATH": toolsPath, "HOME": root.path], stdin: script, timeout: timeout)
+        }
+        #expect(try atHome.index(root.path, using: source).paths == ["app/Library/kept.swift"])
+        #expect(Set(try withTools.index(root.path, using: source).paths) == ["Library/cache.db", "app/Library/kept.swift"])
+    }
+
+    @Test(.enabled(if: listers.contains(.fd)))
+    func indexPrefersFdWhenTheHostHasIt() throws {
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("x".utf8).write(to: root.appendingPathComponent("a.txt"))
+        #expect(try withTools.index(root.path).source == .fd)
+    }
+
+    @Test func indexRefusesAListerTheHostDoesNotHave() throws {
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(throws: HerdrRPCError.self) { try withTools.index(root.path, using: .git) }
+    }
+
+    /// The cap cuts a record in half; the half goes, and the listing says
+    /// there was more.
+    @Test func indexStopsAtItsByteLimitOnAWholePath() throws {
+        let parsed = RemoteFiles.parseIndex(Data("./aa\0./bb\0./cc\0".utf8), byteLimit: 8, source: .find)
+        #expect(parsed == RemoteFileIndex(paths: ["aa"], truncated: true, source: .find))
+        let whole = RemoteFiles.parseIndex(Data("./aa\0./aa\0b\0".utf8), byteLimit: 100, source: .fd)
+        #expect(whole == RemoteFileIndex(paths: ["aa", "b"], truncated: false, source: .fd))
+
+        let root = try filesFixture()
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<40 { try Data().write(to: root.appendingPathComponent("file\(index)")) }
+        let capped = try throughZsh.index(root.path, using: .find, byteLimit: 100)
+        #expect(capped.truncated)
+        #expect(!capped.paths.isEmpty && capped.paths.count < 40)
+        #expect(capped.paths.allSatisfy { $0.hasPrefix("file") })
     }
 
     @Test func rootDisplaysUnderHomeAsATilde() {

@@ -17,6 +17,12 @@ final class FileBrowserView: NSView {
 
     let outline = NSOutlineView()
     let editor = CodeEditorView()
+    /// The fuzzy search over the tree (`FileSearch`): its field, the list
+    /// that stands in for the tree while the field has something in it, and
+    /// a line under the list saying what was searched.
+    let searchField = NSSearchField()
+    let results = FileResultsTableView()
+    let searchStatus = NSTextField(labelWithString: "")
 
     private let scrim = TerminalScrimView()
     private let card = NSVisualEffectView()
@@ -35,6 +41,9 @@ final class FileBrowserView: NSView {
     private var bannerActions: [() -> Void] = []
     private let split = NSSplitView()
     private let treeScroll = NSScrollView()
+    private let resultsScroll = NSScrollView()
+    private let treeColumn = NSStackView()
+    private let treeArea = NSView()
     private let editorArea = NSView()
     private let placeholder = NSTextField(labelWithString: "")
     private var insets: [NSLayoutConstraint] = []
@@ -107,10 +116,50 @@ final class FileBrowserView: NSView {
         outline.outlineTableColumn = column
         outline.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         treeScroll.documentView = outline
-        treeScroll.hasVerticalScroller = true
-        treeScroll.autohidesScrollers = true
-        treeScroll.drawsBackground = false
-        treeScroll.borderType = .noBorder
+
+        searchField.placeholderString = "Go to File"
+        searchField.toolTip = "Find a file by name (⌘P)"
+        searchField.sendsSearchStringImmediately = true
+        searchField.focusRingType = .none
+        searchField.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
+        searchField.setContentHuggingPriority(.init(rawValue: 1), for: .horizontal)
+        results.headerView = nil
+        results.style = .plain
+        results.backgroundColor = .clear
+        results.focusRingType = .none
+        let match = NSTableColumn(identifier: .init("match"))
+        match.resizingMask = .autoresizingMask
+        results.addTableColumn(match)
+        results.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
+        resultsScroll.documentView = results
+        resultsScroll.isHidden = true
+        for scroll in [treeScroll, resultsScroll] {
+            scroll.hasVerticalScroller = true
+            scroll.autohidesScrollers = true
+            scroll.drawsBackground = false
+            scroll.borderType = .noBorder
+            scroll.translatesAutoresizingMaskIntoConstraints = false
+            treeArea.addSubview(scroll)
+            NSLayoutConstraint.activate([
+                scroll.topAnchor.constraint(equalTo: treeArea.topAnchor),
+                scroll.bottomAnchor.constraint(equalTo: treeArea.bottomAnchor),
+                scroll.leadingAnchor.constraint(equalTo: treeArea.leadingAnchor),
+                scroll.trailingAnchor.constraint(equalTo: treeArea.trailingAnchor),
+            ])
+        }
+        searchStatus.textColor = .secondaryLabelColor
+        searchStatus.lineBreakMode = .byTruncatingTail
+        searchStatus.isHidden = true
+        searchStatus.setContentCompressionResistancePriority(.init(rawValue: 1), for: .horizontal)
+        treeColumn.orientation = .vertical
+        treeColumn.alignment = .leading
+        treeColumn.setViews([searchField, treeArea, searchStatus], in: .leading)
+        for view in [searchField, treeArea, searchStatus] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            view.widthAnchor.constraint(equalTo: treeColumn.widthAnchor).isActive = true
+        }
+        treeArea.setContentHuggingPriority(.init(rawValue: 1), for: .vertical)
+        treeArea.setContentCompressionResistancePriority(.init(rawValue: 1), for: .vertical)
 
         placeholder.alignment = .center
         placeholder.textColor = .secondaryLabelColor
@@ -138,11 +187,11 @@ final class FileBrowserView: NSView {
         // and `setPosition(_:ofDividerAt:)` does nothing to one laid out by
         // constraints — the tree sat at its 120-point minimum whatever it was
         // told.
-        treeScroll.frame = NSRect(x: 0, y: 0, width: ChromeMetrics.length(240), height: 100)
+        treeColumn.frame = NSRect(x: 0, y: 0, width: ChromeMetrics.length(240), height: 100)
         editorArea.frame = NSRect(x: 0, y: 0, width: 600, height: 100)
         split.isVertical = true
         split.dividerStyle = .thin
-        split.addArrangedSubview(treeScroll)
+        split.addArrangedSubview(treeColumn)
         split.addArrangedSubview(editorArea)
         // Both holds stay under a divider drag (`dragThatCannotResizeWindow`,
         // 490), or the drag cannot win against them. A tree held at
@@ -154,7 +203,7 @@ final class FileBrowserView: NSView {
         // 260 over 250 an `NSSplitViewItem` sidebar uses.
         split.setHoldingPriority(.init(rawValue: 260), forSubviewAt: 0)
         split.setHoldingPriority(.defaultLow, forSubviewAt: 1)
-        treeScroll.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
+        treeColumn.widthAnchor.constraint(greaterThanOrEqualToConstant: 120).isActive = true
         editorArea.widthAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
 
         stack.orientation = .vertical
@@ -213,6 +262,12 @@ final class FileBrowserView: NSView {
         fileLabel.stringValue = file.map { (dirty ? "● " : "") + $0 } ?? ""
         fileLabel.toolTip = dirty ? "Edited — ⌘S saves it to the host" : nil
         saveButton.isEnabled = canSave
+    }
+
+    /// The list of matches in the tree's place, or the tree back.
+    func showSearchResults(_ show: Bool) {
+        resultsScroll.isHidden = !show
+        treeScroll.isHidden = show
     }
 
     func setBusy(_ busy: Bool) {
@@ -299,6 +354,11 @@ final class FileBrowserView: NSView {
         }
         outline.rowHeight = ChromeMetrics.length(20)
         outline.reloadData()
+        results.rowHeight = ChromeMetrics.length(20)
+        results.reloadData()
+        searchField.font = ChromeMetrics.font(12)
+        searchStatus.font = ChromeMetrics.font(11)
+        treeColumn.spacing = ChromeMetrics.length(6)
     }
 
     @objc private func applyGhosttyConfig() {
